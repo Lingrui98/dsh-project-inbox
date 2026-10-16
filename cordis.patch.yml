@@ -1,0 +1,7 @@
+# dsh-research-hub bundle 层：插入 host 侧插件行。
+# host 提供 hub 工具、项目注册表、收件箱存储与 /rhub/api 路由；
+# client 由 dsh.client 声明驱动，注册 panellist 图标与 main 面板。
+- insert:
+    - id: dsh-research-hub
+      name: '@dsh-external/dsh-research-hub'
+      config: {}

@@ -1,0 +1,12 @@
+node_modules/
+lib/
+*.tsbuildinfo
+*.tgz
+.screenshots/
+.env
+.env.*
+!.env.example
+*.log
+research-hub.json
+research-hub.json.tmp
+SHA256SUMS

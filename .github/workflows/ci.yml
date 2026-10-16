@@ -1,0 +1,21 @@
+name: Validate plugin
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - name: Install build tools
+        run: npm ci --legacy-peer-deps --ignore-scripts
+      - name: Build and verify bundle
+        run: npm run check:release

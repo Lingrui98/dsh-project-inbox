@@ -1,0 +1,1240 @@
+/**
+ * @dsh-external/dsh-research-hub — client 侧：指挥中心面板（卡片式）。
+ *
+ * 挂载点：
+ * - sidebar.panellist：入口图标 + 待处理角标（轻量 badge 端点轮询）。
+ * - main（key = research-hub）：指挥中心页。首页为项目卡片网格，点卡片进详情。
+ *
+ * 数据通道：POST /rhub/api/<method>（host 侧 webServer 前缀路由，loopback 围栏）。
+ * 无 JSX：rolldown 构建 externals 里的 react，运行时用宿主模块表的 React。
+ */
+import React from 'react'
+import type { SlotsService } from '@deepseek-ai/dsh-client-ui-slots'
+import { HUB_CSS } from './styles.js'
+
+const h = React.createElement
+const PANEL_ID = 'research-hub'
+const API_BASE = '/rhub/api'
+
+// ── 跨面板状态（模块级）：指挥中心的当前视图 + 跳转后的返回目标 ──────────────
+// HubPage 卸载/重挂载时视图不丢；跳转会话后头部出现"返回指挥中心"按钮。
+let hubView: string | null = null
+let returnTarget: { sessionId: string } | null = null
+/** 跳转探针：retain 主视图引用（唯一同时持有的一个，下次跳转或返回时释放）。 */
+let currentProbe: { release(): void } | null = null
+const returnListeners = new Set<() => void>()
+function setReturnTarget(v: { sessionId: string } | null): void {
+  returnTarget = v
+  for (const fn of returnListeners) fn()
+}
+
+// ── 类型（与 host 侧面板载荷对齐） ────────────────────────────────────────────
+
+interface Counts { questions: number; deliverables: number; urgent: number }
+interface SessionView {
+  id: string
+  title: string
+  running: boolean
+  updatedAt: number
+  projectId: string | null
+  bindBy: string
+  bindLocked: boolean
+  suggested?: string | null
+}
+interface ProjectView {
+  id: string
+  name: string
+  aliases: string[]
+  source: string
+  counts: Counts
+  sessions: SessionView[]
+}
+interface HubItemView {
+  id: string
+  projectId: string | null
+  sessionId: string
+  sessionTitle: string
+  sessionRunning: boolean
+  sessionVisible: boolean
+  type: 'question' | 'deliverable'
+  title: string
+  body: string
+  priority: 'normal' | 'urgent'
+  status: 'pending' | 'answered' | 'dismissed'
+  source: 'tool' | 'auq'
+  createdAt: number
+  settledAt?: number
+  answerText?: string
+  auq?: {
+    callId: string
+    questions: { id: string; question: string; header?: string; options?: { label: string; description?: string }[]; multiSelect?: boolean }[]
+  }
+}
+interface PanelData {
+  now: number
+  pending: number
+  projects: ProjectView[]
+  unassignedSessions: SessionView[]
+  unassignedCounts: Counts
+  trashedSessions: { id: string; title: string; at: number }[]
+  items: HubItemView[]
+}
+
+// ── API ──────────────────────────────────────────────────────────────────────
+
+async function api<T = any>(method: string, payload?: any): Promise<T> {
+  const res = await fetch(`${API_BASE}/${method}`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(payload ?? {}),
+  })
+  const data = await res.json().catch(() => null)
+  if (!data || data.ok !== true) throw new Error(data?.error?.message ?? `请求失败（${res.status}）`)
+  return data.value as T
+}
+
+// ── 样式（只用宿主 theme token） ─────────────────────────────────────────────
+
+const C = {
+  base: 'var(--dsw-alias-bg-base, #f7f7f8)',
+  surface: 'var(--dsw-alias-bg-layer-1, #ffffff)',
+  surface2: 'var(--dsw-alias-bg-layer-2, #f1f1f2)',
+  overlay: 'var(--dsw-alias-bg-overlay, #ffffff)',
+  border: 'var(--dsw-alias-border-l1, rgba(0,0,0,0.16))',
+  borderStrong: 'var(--dsw-alias-border-l2, rgba(0,0,0,0.28))',
+  brand: 'var(--dsw-alias-brand-primary, #4a4a4a)',
+  text: 'var(--dsw-alias-label-primary, #202020)',
+  text2: 'var(--dsw-alias-label-secondary, #626262)',
+  text3: 'var(--dsw-alias-label-secondary, #626262)',
+  muted: 'var(--dsw-alias-label-secondary, #626262)',
+  ok: 'var(--dsw-alias-state-success-primary, #4a4a4a)',
+  warn: 'var(--dsw-alias-state-warn-primary, #4a4a4a)',
+  err: 'var(--dsw-alias-state-error-primary, #4a4a4a)',
+  info: 'var(--dsw-alias-brand-primary, #4a4a4a)',
+}
+
+const S: Record<string, React.CSSProperties> = {
+  root: {
+    display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0,
+    color: C.text, background: C.base, fontSize: 13, isolation: 'isolate',
+  },
+  header: {
+    display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 14, padding: '16px clamp(18px, 3vw, 40px)',
+    background: C.surface, borderBottom: `1px solid ${tint(C.text2, 14)}`, flexShrink: 0,
+  },
+  content: {
+    flex: 1, overflowY: 'auto', padding: '28px clamp(18px, 3vw, 40px) 40px',
+    minWidth: 0, background: `radial-gradient(ellipse at 90% 0%, ${tint('#6589df', 5)}, transparent 55%), ${C.base}`,
+  },
+  grid: {
+    display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(min(100%, 340px), 1fr))',
+    gap: 16, width: '100%', maxWidth: 1600, margin: '0 auto', alignItems: 'start',
+  },
+  pcard: {
+    minWidth: 0,
+    background: C.surface, border: `1px solid ${tint(C.text2, 18)}`, borderRadius: 18,
+    padding: '18px', cursor: 'pointer', display: 'flex', flexDirection: 'column', gap: 12,
+    boxShadow: `0 2px 4px ${tint(C.text, 3)}, 0 8px 24px ${tint(C.text, 3)}`,
+    transition: 'transform 160ms ease, box-shadow 160ms ease, border-color 160ms ease, background 160ms ease',
+  },
+  card: {
+    background: C.surface, border: `1px solid ${tint(C.text2, 18)}`, borderRadius: 14,
+    padding: '18px', marginBottom: 12,
+    boxShadow: `0 2px 8px ${tint(C.text, 3)}`,
+  },
+  row: { display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' },
+  muted: { color: C.muted, fontSize: 12, lineHeight: 1.45 },
+  body2: {
+    color: C.text2, fontSize: 13, whiteSpace: 'pre-wrap',
+    overflowWrap: 'anywhere', marginTop: 12, padding: '0 0 2px',
+    maxHeight: 240, overflowY: 'auto', lineHeight: 1.8,
+  },
+  textarea: {
+    width: '100%', boxSizing: 'border-box', marginTop: 14, padding: '10px 12px', fontSize: 12, minHeight: 58,
+    background: tint(C.text2, 4), color: C.text, border: `1px solid ${tint(C.text2, 22)}`,
+    borderRadius: 10, resize: 'vertical', fontFamily: 'inherit', lineHeight: 1.65,
+    transition: 'border-color 150ms ease, background 150ms ease',
+  },
+  btn: {
+    minHeight: 32, padding: '6px 11px', fontSize: 12, fontWeight: 550, borderRadius: 8,
+    border: `1px solid ${tint(C.text2, 24)}`, background: C.surface, color: C.text, cursor: 'pointer',
+    transition: 'background 140ms ease, border-color 140ms ease, box-shadow 140ms ease, transform 140ms ease',
+  },
+  btnPrimary: {
+    minHeight: 30, padding: '6px 13px', fontSize: 12, fontWeight: 650, borderRadius: 9,
+    border: `1px solid color-mix(in srgb, ${C.brand} 45%, transparent)`,
+    background: `color-mix(in srgb, ${C.brand} 18%, transparent)`,
+    color: C.text, cursor: 'pointer', transition: 'background 140ms ease, border-color 140ms ease, box-shadow 140ms ease, transform 140ms ease',
+  },
+  chip: {
+    display: 'inline-flex', alignItems: 'center', padding: '3px 9px', fontSize: 11, fontWeight: 500, borderRadius: 8,
+    background: C.surface2, border: `1px solid ${C.border}`, color: C.text2,
+  },
+  select: {
+    minHeight: 29, background: C.surface2, color: C.text, border: `1px solid ${C.borderStrong}`,
+    borderRadius: 8, fontSize: 12, padding: '4px 6px',
+  },
+}
+
+function buttonHover(baseBackground = C.surface, hoverBackground = tint(C.brand, 9), baseBorder = tint(C.text2, 24), hoverBorder = tint(C.brand, 48)) {
+  return {
+    onMouseEnter: (e: any) => {
+      if (e.currentTarget.disabled) return
+      e.currentTarget.style.background = hoverBackground
+      e.currentTarget.style.borderColor = hoverBorder
+      e.currentTarget.style.boxShadow = `0 2px 8px ${tint(C.brand, 12)}`
+    },
+    onMouseLeave: (e: any) => {
+      e.currentTarget.style.background = baseBackground
+      e.currentTarget.style.borderColor = baseBorder
+      e.currentTarget.style.boxShadow = 'none'
+    },
+  }
+}
+
+function pill(text: string, color: string, key?: string) {
+  return h('span', {
+    key,
+    style: {
+      display: 'inline-flex', alignItems: 'center', fontSize: 11, fontWeight: 600,
+      padding: '3px 8px', borderRadius: 6, color: C.text, gap: 5,
+      background: tint(color, 9),
+      border: `1px solid ${tint(color, 16)}`, lineHeight: '17px',
+      whiteSpace: 'nowrap',
+    },
+  }, [
+    h('span', { key: 'dot', 'aria-hidden': true, style: { width: 4, height: 4, borderRadius: '50%', background: color, flexShrink: 0 } }),
+    text,
+  ])
+}
+
+function ago(now: number, time: number): string {
+  const s = Math.max(0, Math.floor((now - time) / 1000))
+  if (s < 60) return `${s} 秒前`
+  const m = Math.floor(s / 60)
+  if (m < 60) return `${m} 分钟前`
+  const hr = Math.floor(m / 60)
+  if (hr < 24) return `${hr} 小时前`
+  return `${Math.floor(hr / 24)} 天前`
+}
+
+// ── 内联 SVG 图标（currentColor 跟随主题文字色，不依赖 emoji 字体） ───────────
+
+const ICON_PATHS: Record<string, React.ReactNode[]> = {
+  compass: [
+    h('circle', { key: 'c', cx: 12, cy: 12, r: 9, fill: 'none', stroke: 'currentColor', strokeWidth: 2 }),
+    h('polygon', { key: 'n', points: '15.5,8.5 13.1,13.1 8.5,15.5 10.9,10.9', fill: 'currentColor' }),
+  ],
+  folder: [
+    h('path', { key: 'p', d: 'M3 5a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5z', fill: 'currentColor' }),
+  ],
+  inbox: [
+    h('path', { key: 'p', d: 'M5 3h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2zm0 9v7h14v-7h-4.2a3.2 3.2 0 0 1-5.6 0H5z', fill: 'currentColor' }),
+  ],
+  tray: [
+    h('path', { key: 'a', d: 'M4 4h16a1 1 0 0 1 1 1v4H3V5a1 1 0 0 1 1-1z', fill: 'currentColor' }),
+    h('path', { key: 'b', d: 'M4 11h16v8a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-8zm6 3v2h4v-2h-4z', fill: 'currentColor' }),
+  ],
+  question: [
+    h('circle', { key: 'c', cx: 12, cy: 12, r: 9, fill: 'none', stroke: 'currentColor', strokeWidth: 2 }),
+    h('path', { key: 'q', d: 'M9.6 9.2a2.5 2.5 0 0 1 4.9.6c0 1.6-1.7 2-2.3 3v.7', fill: 'none', stroke: 'currentColor', strokeWidth: 2, strokeLinecap: 'round' }),
+    h('circle', { key: 'd', cx: 12, cy: 17, r: 1.1, fill: 'currentColor' }),
+  ],
+  package: [
+    h('path', { key: 'p', d: 'M12 2l8 4v12l-8 4-8-4V6l8-4zm0 2.2L6.6 7 12 9.8 17.4 7 12 4.2zM6.5 8.6V18l4.5 2.2v-9.4l-4.5-2.2zm11 0l-4.5 2.2v9.4l4.5-2.2V8.6z', fill: 'currentColor' }),
+  ],
+  arrow: [h('path', { key: 'p', d: 'M5 12h14m-5-5 5 5-5 5', fill: 'none', stroke: 'currentColor', strokeWidth: 1.7, strokeLinecap: 'round', strokeLinejoin: 'round' })],
+  check: [h('path', { key: 'p', d: 'm5 12 4 4L19 6', fill: 'none', stroke: 'currentColor', strokeWidth: 1.8, strokeLinecap: 'round', strokeLinejoin: 'round' })],
+  plus: [h('path', { key: 'p', d: 'M12 5v14M5 12h14', fill: 'none', stroke: 'currentColor', strokeWidth: 1.7, strokeLinecap: 'round' })],
+  refresh: [h('path', { key: 'p', d: 'M20 7v5h-5M4 17v-5h5M6 6a8 8 0 0 1 13 3M5 15a8 8 0 0 0 13 3', fill: 'none', stroke: 'currentColor', strokeWidth: 1.7, strokeLinecap: 'round', strokeLinejoin: 'round' })],
+  activity: [h('path', { key: 'p', d: 'M3 12h4l3-7 4 14 3-7h4', fill: 'none', stroke: 'currentColor', strokeWidth: 1.7, strokeLinecap: 'round', strokeLinejoin: 'round' })],
+  trash: [
+    h('path', { key: 'p', d: 'M9 3h6l1 2h4v2H4V5h4l1-2zM6 9h12l-1 11a2 2 0 0 1-2 2H9a2 2 0 0 1-2-2L6 9zm3 2v8h1.5v-8H9zm4.5 0v8H15v-8h-1.5z', fill: 'currentColor' }),
+  ],
+}
+
+function Icon(props: { name: keyof typeof ICON_PATHS; size?: number; color?: string }) {
+  return h('svg', {
+    viewBox: '0 0 24 24',
+    width: props.size ?? 14,
+    height: props.size ?? 14,
+    'aria-hidden': true, focusable: false,
+    style: { display: 'inline-block', verticalAlign: '-2px', flexShrink: 0, color: props.color ?? 'currentColor' },
+  }, ICON_PATHS[props.name])
+}
+
+// ── 项目色相：按 id 哈希稳定取色，color-mix 低透明组合，亮暗主题都安全 ───────
+
+const HUES = ['#4f7dd8', '#2f9e67', '#b7791f', '#8a5fd6', '#c94b58', '#2fa3a8']
+
+function projectHue(id: string): string {
+  let n = 0
+  for (let i = 0; i < id.length; i += 1) n = (n * 31 + id.charCodeAt(i)) >>> 0
+  return HUES[n % HUES.length]
+}
+
+function tint(color: string, pct: number): string {
+  return `color-mix(in srgb, ${color} ${pct}%, transparent)`
+}
+
+function sessionLabel(s: { id: string; title: string }): string {
+  return s.title || s.id.slice(0, 8)
+}
+
+// ── 会话芯片（点击跳转会话） ──────────────────────────────────────────────────
+
+function SessionChip(props: { item: HubItemView; onJump: (id: string) => void }) {
+  const { item } = props
+  return h('button', {
+    type: 'button',
+    style: {
+      ...S.chip, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 6, maxWidth: '100%', minWidth: 0, boxSizing: 'border-box',
+      transition: 'background 140ms ease, border-color 140ms ease, color 140ms ease',
+    },
+    title: `跳转会话 ${item.sessionId}`,
+    onMouseEnter: (e: any) => {
+      e.currentTarget.style.background = tint(C.info, 9)
+      e.currentTarget.style.borderColor = tint(C.info, 46)
+      e.currentTarget.style.color = C.text
+    },
+    onMouseLeave: (e: any) => {
+      e.currentTarget.style.background = C.surface2
+      e.currentTarget.style.borderColor = C.border
+      e.currentTarget.style.color = C.text2
+    },
+    onClick: (e: any) => { e.stopPropagation(); props.onJump(item.sessionId) },
+  }, [
+    h('span', {
+      key: 'dot',
+      style: {
+        width: 7, height: 7, borderRadius: '50%', flexShrink: 0,
+        background: item.sessionRunning ? C.ok : C.text3,
+        boxShadow: item.sessionRunning ? `0 0 0 3px ${tint(C.ok, 14)}` : 'none',
+      },
+    }),
+    h('span', { key: 't', style: { minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, item.sessionTitle || item.sessionId.slice(0, 8)),
+  ])
+}
+
+// ── 消息卡片 ──────────────────────────────────────────────────────────────────
+
+function ItemCard(props: { item: HubItemView; now: number; onChanged: () => void; onJump: (id: string) => void; embedded?: boolean }) {
+  const { item } = props
+  const [text, setText] = React.useState('')
+  const [selected, setSelected] = React.useState<Record<string, string[]>>({})
+  const [busy, setBusy] = React.useState(false)
+  const [error, setError] = React.useState('')
+  const [expanded, setExpanded] = React.useState(false)
+
+  const pending = item.status === 'pending'
+  const questions = item.auq?.questions ?? []
+  const withOptions = pending && item.source === 'auq' && questions.some((q) => (q.options?.length ?? 0) > 0)
+
+  const run = async (fn: () => Promise<unknown>) => {
+    setBusy(true)
+    setError('')
+    try {
+      await fn()
+      props.onChanged()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const toggle = (qid: string, label: string, multi: boolean) => {
+    setSelected((prev) => {
+      const cur = prev[qid] ?? []
+      const next = cur.includes(label) ? cur.filter((l) => l !== label) : multi ? [...cur, label] : [label]
+      return { ...prev, [qid]: next }
+    })
+  }
+
+  const submitOptions = () =>
+    run(async () => {
+      const answers = questions.map((q, i) => ({
+        id: q.id,
+        selected: selected[q.id] ?? [],
+        ...(i === 0 && text.trim() ? { custom: text.trim() } : {}),
+      }))
+      await api('answerStructured', { itemId: item.id, answers })
+    })
+
+  const submitText = () =>
+    run(async () => {
+      if (!text.trim()) throw new Error('请先填写回复内容')
+      await api('reply', { itemId: item.id, text: text.trim() })
+    })
+
+  const canSubmitOptions = questions.every((q, i) => (selected[q.id]?.length ?? 0) > 0 || (i === 0 && text.trim() !== ''))
+
+  const typeIcon = item.type === 'question' ? 'question' : 'package'
+  const typeColor = item.type === 'question' ? C.warn : C.ok
+  const children: React.ReactNode[] = [
+    h('div', { key: 'type', style: { ...S.row, gap: 6, marginBottom: 9 } }, [
+      h(Icon, { key: 'icon', name: typeIcon, size: 14, color: typeColor }),
+      h('span', { key: 'label', style: { fontSize: 11, fontWeight: 650, color: C.text2 } }, pending ? item.type === 'question' ? '待回答' : '待查收' : item.type === 'question' ? '问题' : '交付'),
+      item.priority === 'urgent' && pending ? pill('紧急', C.err, 'urgent') : null,
+      item.source === 'auq' && pending ? pill('会话提问', C.info, 'auq') : null,
+      h('span', { key: 'age', style: { ...S.muted, marginLeft: 'auto', fontSize: 11 } }, ago(props.now, item.createdAt)),
+    ]),
+    h('div', { key: 'head', style: { fontWeight: 650, fontSize: 14, lineHeight: 1.65, color: C.text, overflowWrap: 'anywhere' } }, item.title),
+    h('div', { key: 'meta', style: { ...S.row, marginTop: 6 } }, [
+      h(SessionChip, { key: 'chip', item, onJump: props.onJump }),
+      !item.sessionVisible ? h('span', { key: 'gone', style: S.muted }, '（会话不在列表）') : null,
+    ]),
+  ]
+
+  if (item.body) {
+    const long = item.body.length > 200
+    children.push(
+      h('div', {
+        key: 'body',
+        style: long && !expanded
+          ? { ...S.body2, maxHeight: 58, overflow: 'hidden', position: 'relative' }
+          : S.body2,
+      }, item.body),
+      long
+        ? h('button', {
+          key: 'expand', type: 'button', 'aria-expanded': expanded,
+          style: { fontSize: 11, color: C.text2, cursor: 'pointer', marginTop: 5, display: 'inline-block', border: 0, background: 'transparent', padding: '3px 0', textDecoration: 'underline', textUnderlineOffset: 3 },
+          onClick: () => setExpanded(!expanded),
+        }, expanded ? '收起' : `展开全部（${item.body.length} 字）`)
+        : null,
+    )
+  }
+
+  if (withOptions) {
+    children.push(
+      h('div', { key: 'opts', style: { marginTop: 8, display: 'flex', flexDirection: 'column', gap: 8 } },
+        questions.map((q) =>
+          h('div', { key: q.id }, [
+            questions.length > 1 ? h('div', { key: 'qt', style: { fontSize: 12, marginBottom: 4, color: C.text2 } }, q.question) : null,
+            h('div', { key: 'chips', style: S.row },
+              (q.options ?? []).map((o) => {
+                const on = (selected[q.id] ?? []).includes(o.label)
+                return h('button', {
+                  key: o.label, type: 'button', 'aria-pressed': on, disabled: busy,
+                  title: o.description,
+                  onClick: () => toggle(q.id, o.label, Boolean(q.multiSelect)),
+                  style: {
+                    ...S.chip,
+                    cursor: 'pointer',
+                    padding: '3px 10px',
+                    color: on ? C.text : C.text2,
+                    background: on ? tint(C.info, 18) : 'transparent',
+                    border: `1px solid ${on ? tint(C.info, 58) : C.border}`,
+                    boxShadow: on ? `0 0 0 2px ${tint(C.info, 8)}` : 'none',
+                    transition: 'background 140ms ease, border-color 140ms ease, box-shadow 140ms ease',
+                  },
+                }, o.label)
+              }),
+            ),
+          ]),
+        ),
+      ),
+    )
+  }
+
+  if (pending) {
+    children.push(
+      h('textarea', {
+        key: 'reply',
+        style: S.textarea,
+        'aria-label': `回复：${item.title}`,
+        placeholder: withOptions ? '补充说明（可选） · Ctrl/⌘ + Enter 提交' : '写下回复… · Ctrl/⌘ + Enter 发送',
+        value: text,
+        disabled: busy,
+        onChange: (e: any) => setText(e.target.value),
+        onKeyDown: (e: any) => {
+          if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+            e.preventDefault()
+            if (withOptions) void submitOptions()
+            else void submitText()
+          }
+        },
+      }),
+      h('div', { key: 'actions', className: 'rh-message-actions', style: { ...S.row, marginTop: 8 } }, [
+        withOptions
+          ? h('button', {
+             key: 'send', style: { ...S.btnPrimary, opacity: canSubmitOptions && !busy ? 1 : 0.5 }, disabled: busy || !canSubmitOptions,
+             'aria-busy': busy, onClick: submitOptions,
+             ...buttonHover(tint(C.brand, 18), tint(C.brand, 28), tint(C.brand, 45), tint(C.brand, 65)),
+           }, busy ? '提交中…' : '提交选择')
+          : h('button', { key: 'send', style: { ...S.btnPrimary, opacity: busy ? 0.5 : 1 }, disabled: busy, onClick: submitText, ...buttonHover(tint(C.brand, 18), tint(C.brand, 28), tint(C.brand, 45), tint(C.brand, 65)) }, busy ? '发送中…' : '回复'),
+        item.type === 'deliverable'
+          ? h('button', {
+             key: 'ack', style: { ...S.btn, color: C.text, background: tint(C.ok, 6), borderColor: tint(C.ok, 32), opacity: busy ? 0.55 : 1 }, disabled: busy,
+             onClick: () => run(() => api('ack', { itemId: item.id })),
+             ...buttonHover(tint(C.ok, 6), tint(C.ok, 12), tint(C.ok, 32), tint(C.ok, 48)),
+           }, busy ? '处理中…' : '查收')
+          : null,
+        h('button', {
+           key: 'jump', style: { ...S.btn, opacity: busy ? 0.55 : 1 }, disabled: busy, onClick: () => props.onJump(item.sessionId),
+           ...buttonHover(),
+         }, '跳转会话'),
+        h('button', {
+           key: 'dismiss', className: 'rh-subtle-action', style: { ...S.btn, color: C.text3, opacity: busy ? 0.55 : 1, marginLeft: 'auto' }, disabled: busy,
+           onClick: () => run(() => api('dismiss', { itemId: item.id })),
+         }, '忽略'),
+        error ? h('span', { key: 'err', style: { color: C.err, fontSize: 12 } }, error) : null,
+      ]),
+    )
+  } else {
+    children.push(
+      h('div', { key: 'settled', style: { ...S.row, marginTop: 8 } }, [
+        pill(item.status === 'answered' ? '已回答' : '已忽略', item.status === 'answered' ? C.ok : C.text3, 'st'),
+        h('span', { key: 'time', style: S.muted }, item.settledAt ? ago(props.now, item.settledAt) : ''),
+        h('button', {
+           key: 'reopen', style: { ...S.btn, minHeight: 27, padding: '4px 9px', opacity: busy ? 0.55 : 1 }, disabled: busy,
+           onClick: () => run(() => api('reopen', { itemId: item.id })),
+           ...buttonHover(),
+         }, busy ? '处理中…' : '重开'),
+      ]),
+      item.answerText ? h('div', { key: 'ans', style: S.body2 }, `答复：${item.answerText}`) : null,
+    )
+  }
+
+  // embedded：收件箱已提供外层表面，消息本体不再重复画框。
+  const shellStyle: React.CSSProperties = props.embedded
+    ? {
+      padding: '12px 0 4px', borderTop: `1px solid ${tint(C.text2, 14)}`, marginTop: 9,
+    }
+    : {
+      ...S.card,
+      borderLeft: `3px solid ${item.priority === 'urgent' && pending ? C.err : tint(typeColor, pending ? 62 : 28)}`,
+      background: pending ? C.surface : tint(typeColor, 3),
+    }
+
+  return h('div', { className: 'rh-message', style: shellStyle }, children)
+}
+
+// ── 会话绑定行 ────────────────────────────────────────────────────────────────
+
+function SessionBindRow(props: { session: SessionView; projects: ProjectView[]; onChanged: () => void; onJump: (id: string) => void }) {
+  const { session } = props
+  const [busy, setBusy] = React.useState(false)
+  const [error, setError] = React.useState('')
+  const suggestedProject = session.suggested ? props.projects.find((p) => p.id === session.suggested) : undefined
+
+  const bind = async (projectId: string | null) => {
+    setBusy(true)
+    setError('')
+    try {
+      await api('bind', { sessionId: session.id, projectId })
+      props.onChanged()
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const onSelect = async (value: string) => {
+    if (value === '__new__') {
+      const name = window.prompt('新项目名称（将创建并把该会话归入）：')
+      if (!name?.trim()) return
+      setBusy(true)
+      try {
+        const created = await api<{ id: string }>('addProject', { name: name.trim() })
+        await api('bind', { sessionId: session.id, projectId: created.id })
+        props.onChanged()
+      } finally {
+        setBusy(false)
+      }
+      return
+    }
+    await bind(value === '' ? null : value)
+  }
+
+  return h('div', {
+    className: 'rh-session-row',
+    style: { padding: '13px 2px', borderBottom: `1px solid ${tint(C.text2, 11)}` },
+  }, [
+    h('span', {
+      key: 'dot',
+      style: { width: 6, height: 6, borderRadius: '50%', background: session.running ? C.ok : tint(C.text3, 45),
+        boxShadow: session.running ? `0 0 0 3px ${tint(C.ok, 12)}` : 'none' },
+    }),
+    h('button', {
+      key: 'title', type: 'button',
+      style: { font: 'inherit', textAlign: 'left', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', cursor: 'pointer', border: 0, background: 'transparent', color: C.text, padding: '3px 0', fontSize: 12 },
+      title: sessionLabel(session), onClick: () => props.onJump(session.id),
+    }, sessionLabel(session)),
+    h('button', {
+      key: 'trash', type: 'button', disabled: busy,
+      title: '扫入回收站（指挥中心内隐藏，可在回收站恢复）', 'aria-label': `将会话移入回收站：${sessionLabel(session)}`,
+      className: 'rh-subtle-action', style: { ...S.btn, color: C.text3, display: 'inline-flex', minHeight: 26, padding: 5, opacity: busy ? 0.45 : 1 },
+      onClick: () => {
+        if (busy) return
+        setBusy(true)
+        void api('trashSession', { sessionId: session.id }).then(props.onChanged).catch((e) => setError(String(e))).finally(() => setBusy(false))
+      },
+    }, h(Icon, { name: 'trash', size: 12 })),
+    h('div', { key: 'controls', className: 'rh-session-row-controls' }, [
+      suggestedProject && session.projectId === null
+        ? h('button', {
+          key: 'suggest', type: 'button', disabled: busy, title: '按会话标题推断的建议项目，点击归入',
+          style: { ...S.chip, cursor: 'pointer', color: C.text, border: `1px dashed ${tint(C.brand, 45)}`, background: tint(C.brand, 6) },
+          onClick: () => void bind(suggestedProject.id).catch((e) => setError(String(e))),
+        }, `建议：${suggestedProject.name}`)
+        : null,
+      h('select', {
+        key: 'sel', style: { ...S.select, minHeight: 27, fontSize: 11, background: tint(C.text2, 4), borderColor: tint(C.text2, 20) },
+        'aria-label': `会话所属项目：${sessionLabel(session)}`, disabled: busy,
+        value: session.projectId ?? '', onChange: (e: any) => void onSelect(e.target.value).catch((err) => setError(String(err))),
+      }, [
+        h('option', { key: 'none', value: '' }, '未分配'),
+        ...props.projects.map((p) => h('option', { key: p.id, value: p.id }, p.name)),
+        h('option', { key: 'new', value: '__new__' }, '＋ 新建项目并归入'),
+      ]),
+      session.bindLocked ? pill('锁定', C.text2, 'lock') : session.bindBy === 'agent' ? pill('自报', C.text3, 'by') : null,
+    ]),
+    error ? h('div', { key: 'error', role: 'alert', style: { gridColumn: '2 / -1', color: C.err, fontSize: 11, overflowWrap: 'anywhere' } }, error) : null,
+  ])
+}
+
+// ── 首页会话预览：只使用 panel 已有数据，不额外读取会话日志 ────────────────────
+
+function SessionPreview(props: { sessions: SessionView[]; now: number; onJump: (id: string) => void }) {
+  const recent = [...props.sessions]
+    .sort((a, b) => b.updatedAt - a.updatedAt || a.id.localeCompare(b.id))
+    .slice(0, 3)
+  return h('div', {
+    style: { borderTop: `1px solid ${tint(C.text2, 13)}`, paddingTop: 11 },
+  }, [
+    h('div', { key: 'label', style: { ...S.muted, fontSize: 10, marginBottom: 6, letterSpacing: '0.04em' } }, '最近会话'),
+    recent.length > 0
+      ? recent.map((session) => h('button', {
+        key: session.id,
+        type: 'button', className: 'rh-session-link',
+        title: `打开会话：${sessionLabel(session)}${session.running ? '（运行中）' : ''}`,
+        onClick: (e: any) => { e.stopPropagation(); props.onJump(session.id) },
+        style: {
+          display: 'flex', alignItems: 'center', gap: 7, width: '100%', minWidth: 0,
+          minHeight: 33, padding: '6px', border: '1px solid transparent', borderRadius: 7,
+          background: 'transparent', color: C.text2, font: 'inherit', fontSize: 12,
+          textAlign: 'left', cursor: 'pointer', lineHeight: 1.5,
+        },
+        ...buttonHover('transparent', tint(C.info, 7), 'transparent', tint(C.info, 24)),
+      }, [
+        h('span', {
+          key: 'dot', role: 'img', 'aria-label': session.running ? '运行中' : '空闲',
+          style: { width: 5, height: 5, borderRadius: '50%', flexShrink: 0, background: session.running ? C.ok : tint(C.text2, 40) },
+        }),
+        h('span', {
+          key: 'title', className: 'rh-session-title', style: { flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', transition: 'color 150ms ease' },
+        }, sessionLabel(session)),
+        h('span', { key: 'age', style: { fontSize: 10, flexShrink: 0, color: C.text3 } }, ago(props.now, session.updatedAt)),
+      ]))
+      : h('div', { key: 'empty', style: { ...S.muted, padding: '6px', fontSize: 12 } }, '尚无会话归入此项目'),
+  ])
+}
+
+// ── 首页常驻收件箱：独立于项目网格，空箱时仍然保留 ────────────────────────────
+
+function HomeInbox(props: {
+  items: HubItemView[]; projects: ProjectView[]; now: number; total?: number; counts?: Counts
+  onOpen: () => void; onChanged: () => void; onJump: (id: string) => void
+}) {
+  const pending = props.items.filter((item) => item.status === 'pending')
+    .sort((a, b) => Number(b.priority === 'urgent') - Number(a.priority === 'urgent') || a.createdAt - b.createdAt || a.id.localeCompare(b.id))
+  const total = props.total ?? pending.length
+  const urgent = props.counts?.urgent ?? pending.filter((item) => item.priority === 'urgent').length
+  const questions = props.counts?.questions ?? pending.filter((item) => item.type === 'question').length
+  const tone = urgent > 0 ? C.err : HUES[0]
+  return h('section', {
+    'aria-label': '收件箱', className: 'rh-inbox',
+    style: {
+      border: `1px solid ${tint(tone, 22)}`, borderRadius: 20,
+      padding: '22px', marginBottom: 28,
+      background: `radial-gradient(ellipse at 0% 0%, ${tint(tone, 11)}, transparent 65%), ${C.surface}`,
+      boxShadow: `0 4px 20px ${tint(tone, 5)}`, minWidth: 0,
+    },
+  }, [
+    h('div', { key: 'head', className: 'rh-inbox-heading', style: { ...S.row, gap: 14 } }, [
+      h('span', {
+        key: 'icon', className: 'rh-inbox-heading-icon', style: { display: 'inline-flex', padding: 13, borderRadius: 14, background: tint(tone, 11), color: tone, boxShadow: `inset 0 0 0 1px ${tint(tone, 14)}` },
+      }, h(Icon, { name: 'inbox', size: 23 })),
+      h('div', { key: 'title', style: { flex: 1, minWidth: 150 } }, [
+        h('div', { key: 'eyebrow', style: { color: C.text2, fontSize: 10, letterSpacing: '0.1em', fontWeight: 650, marginBottom: 3 } }, total > 0 ? '需要你的关注' : '一切就绪'),
+        h('h2', { key: 'h', style: { margin: 0, fontSize: 21, fontWeight: 700, letterSpacing: '-0.03em', lineHeight: 1.4 } }, `收件箱 · ${total} 条待处理`),
+        h('div', { key: 'desc', style: { ...S.muted, marginTop: 5, fontSize: 11 } }, '集中回答问题、查收交付。仅查看不会关闭消息。'),
+      ]),
+      urgent > 0 ? pill(`${urgent} 紧急`, C.err, 'urgent') : null,
+      questions > 0 ? pill(`${questions} 待回答`, C.warn, 'questions') : null,
+      total - questions > 0 ? pill(`${total - questions} 待查收`, C.ok, 'deliverables') : null,
+      h('button', {
+        key: 'open', type: 'button', style: { ...S.btn, padding: '8px 13px', borderColor: tint(tone, 28), background: tint(tone, 7) }, onClick: props.onOpen, ...buttonHover(tint(tone, 7), tint(tone, 13), tint(tone, 28), tint(tone, 45)),
+      }, total > 3 ? `查看全部 ${total} 条` : '打开收件箱'),
+    ]),
+    pending.length > 0
+      ? h('div', {
+        key: 'messages', style: { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 320px), 1fr))', alignItems: 'start', gap: 14, marginTop: 16 },
+      }, pending.slice(0, 3).map((item) => h('div', {
+        key: item.id, style: { minWidth: 0, borderRadius: 13, padding: '14px', background: C.surface, border: `1px solid ${tint(C.text2, 17)}`, boxShadow: `0 2px 6px ${tint(C.text, 3)}` },
+      }, [
+        h('div', {
+          key: 'project', style: { display: 'flex', gap: 6, alignItems: 'center', fontSize: 11, fontWeight: 600, color: C.text2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
+        }, [
+          h('span', { key: 'dot', style: { width: 6, height: 6, borderRadius: 2, flexShrink: 0, background: projectHue(item.projectId ?? 'unassigned') } }),
+          h('span', { key: 'name', style: { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, props.projects.find((project) => project.id === item.projectId)?.name ?? '未分配'),
+        ]),
+        h(ItemCard, { key: 'item', item, now: props.now, onChanged: props.onChanged, onJump: props.onJump, embedded: true }),
+      ])))
+      : h('div', {
+        key: 'empty', className: 'rh-inbox-empty', style: { ...S.row, padding: '16px', marginTop: 18, borderRadius: 12, gap: 12, color: C.text2, border: `1px dashed ${tint(tone, 23)}` },
+      }, [
+        h('span', { key: 'check', style: { display: 'inline-flex', padding: 7, borderRadius: '50%', background: tint(C.ok, 10) } }, h(Icon, { name: 'check', size: 17, color: C.ok })),
+        h('div', { key: 'text' }, [
+          h('div', { key: 'title', style: { color: C.text, fontWeight: 550, fontSize: 13 } }, '当前没有待处理消息'),
+          h('div', { key: 'desc', style: { fontSize: 11, marginTop: 2 } }, '新问题和交付结果会出现在这里。可以继续浏览项目。'),
+        ]),
+      ]),
+    total > 3
+      ? h('button', {
+        key: 'more', type: 'button', onClick: props.onOpen,
+        style: { ...S.btn, width: '100%', marginTop: 12, background: 'transparent' },
+        ...buttonHover('transparent'),
+      }, `还有 ${total - Math.min(pending.length, 3)} 条待处理，打开收件箱继续处理`)
+      : null,
+  ])
+}
+
+// ── 等宽瀑布流：细网格行跨度填空，不改 DOM 顺序或卡片自然高度 ─────────────────
+
+function ProjectGrid(props: { children: React.ReactNode }) {
+  const gridRef = React.useRef<HTMLDivElement | null>(null)
+  React.useLayoutEffect(() => {
+    const grid = gridRef.current
+    if (!grid || typeof ResizeObserver === 'undefined') return
+    let frame = 0
+    let disposed = false
+    const cards = new Set<HTMLElement>()
+    const layout = () => {
+      if (disposed) return
+      // offsetHeight 不受 hover 的 transform 影响。先读后写，避免逐卡交替回流。
+      const spans = [...cards].map((card) => [card, Math.ceil(card.offsetHeight) + 16] as const)
+      for (const [card, span] of spans) card.style.gridRowEnd = `span ${span}`
+      grid.style.gridAutoRows = '1px'
+      grid.style.rowGap = '0px'
+      grid.dataset.masonry = 'ready'
+    }
+    const schedule = () => {
+      if (frame || disposed) return
+      frame = requestAnimationFrame(() => { frame = 0; layout() })
+    }
+    const observer = new ResizeObserver(schedule)
+    const sync = () => {
+      const live = new Set(Array.from(grid.children) as HTMLElement[])
+      for (const card of cards) if (!live.has(card)) { observer.unobserve(card); cards.delete(card) }
+      for (const card of live) if (!cards.has(card)) { cards.add(card); observer.observe(card, { box: 'border-box' }) }
+      layout()
+    }
+    observer.observe(grid)
+    const mutations = new MutationObserver(sync)
+    mutations.observe(grid, { childList: true })
+    sync()
+    return () => {
+      disposed = true
+      cancelAnimationFrame(frame)
+      observer.disconnect()
+      mutations.disconnect()
+      for (const card of cards) card.style.removeProperty('grid-row-end')
+      grid.style.removeProperty('grid-auto-rows')
+      grid.style.removeProperty('row-gap')
+      delete grid.dataset.masonry
+    }
+  }, [])
+  return h('div', { ref: gridRef, className: 'rh-project-grid', style: S.grid }, props.children)
+}
+
+// ── 项目卡片（首页网格单元） ──────────────────────────────────────────────────
+
+function ProjectCard(props: {
+  name: string
+  icon: string
+  /** 项目主题色（卡片强调条与图标底色块）。 */
+  hue: string
+  counts: Counts
+  sessions: SessionView[]
+  /** 待处理消息仅显示标题，完整回复集中在收件箱或项目详情。 */
+  pendingItems?: HubItemView[]
+  now: number
+  note?: string
+  onOpen: () => void
+  onChanged: () => void
+  onJump: (id: string) => void
+}) {
+  const { counts, hue } = props
+  const [hover, setHover] = React.useState(false)
+  const pendingItems = props.pendingItems ?? []
+  return h('div', {
+    // 整卡支持鼠标点击；键盘通过项目名 button 进入，避免嵌套交互角色。
+    role: 'group', className: 'rh-project',
+    'aria-label': props.name,
+    style: {
+      ...S.pcard,
+      '--rh-hue': hue,
+      background: `linear-gradient(135deg, ${tint(hue, 6)}, transparent 55%), ${C.surface}`,
+      borderColor: hover ? tint(hue, 48) : tint(C.text2, 18),
+      cursor: 'pointer',
+      transform: hover ? 'translateY(-2px)' : 'none',
+      boxShadow: hover ? `0 6px 24px ${tint(hue, 12)}, 0 2px 4px ${tint(C.text, 3)}` : S.pcard.boxShadow,
+    },
+    title: '点击进入项目详情',
+    onClick: props.onOpen,
+    onMouseEnter: () => setHover(true),
+    onMouseLeave: () => setHover(false),
+  }, [
+    h('div', { key: 'head', style: { display: 'flex', alignItems: 'center', gap: 9 } }, [
+      h('span', {
+        key: 'iconchip',
+        style: {
+          display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+          width: 36, height: 36, borderRadius: 11, flexShrink: 0,
+          background: tint(hue, 11), color: `color-mix(in srgb, ${hue} 78%, ${C.text})`,
+          boxShadow: `inset 0 0 0 1px ${tint(hue, 14)}`,
+        },
+      }, h(Icon, { name: props.icon, size: 18 })),
+      h('button', {
+        key: 'name', type: 'button',
+        style: { font: 'inherit', fontWeight: 650, fontSize: 14, letterSpacing: '-0.015em', flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', textAlign: 'left', color: C.text, background: 'transparent', border: 0, padding: '5px 0', cursor: 'pointer' },
+        onClick: (e: any) => { e.stopPropagation(); props.onOpen() },
+      }, props.name),
+      h('span', { key: 'arrow', className: 'rh-project-arrow', 'aria-hidden': true, style: { color: C.text2, display: 'inline-flex' } }, h(Icon, { name: 'arrow', size: 15 })),
+    ]),
+    counts.questions + counts.deliverables > 0
+      ? h('div', { key: 'counts', style: S.row }, [
+        counts.urgent > 0 ? pill(`${counts.urgent} 紧急`, C.err, 'u') : null,
+        counts.questions > 0 ? pill(`${counts.questions} 问`, C.warn, 'q') : null,
+        counts.deliverables > 0 ? pill(`${counts.deliverables} 交付`, C.ok, 'd') : null,
+      ])
+      : null,
+    // 项目卡只露出简短摘要，避免同一消息出现两份独立回复草稿。
+    pendingItems.length > 0
+      ? h('div', { key: 'items', style: { display: 'flex', flexDirection: 'column', gap: 7, padding: '10px', borderRadius: 9, background: tint(hue, 5) } },
+        pendingItems.slice(0, 2).map((item) => h('div', {
+          key: item.id, title: item.title,
+          style: { display: 'flex', alignItems: 'center', gap: 6, minWidth: 0, color: C.text2, fontSize: 12, lineHeight: 1.5 },
+        }, [
+          h(Icon, { key: 'icon', name: item.type === 'question' ? 'question' : 'package', size: 12, color: item.priority === 'urgent' ? C.err : item.type === 'question' ? C.warn : C.ok }),
+          h('span', { key: 'title', style: { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, item.title),
+        ])),
+      )
+      : null,
+    h(SessionPreview, { key: 'sessions', sessions: props.sessions, now: props.now, onJump: props.onJump }),
+    h('div', { key: 'foot', style: { ...S.muted, display: 'flex', gap: 10, alignItems: 'center' } }, [
+      h('span', { key: 's' }, `${props.sessions.length} 个会话${props.sessions.length > 3 ? ' · 显示最近 3 个' : ''}`),
+      props.note ? h('span', { key: 'n', style: { flex: 1, fontSize: 10 } }, props.note)
+        : props.sessions.some((session) => session.running)
+          ? h('span', { key: 'running', style: { display: 'inline-flex', alignItems: 'center', gap: 4, marginLeft: 'auto', color: C.ok, fontSize: 10 } }, [h(Icon, { key: 'i', name: 'activity', size: 12 }), `${props.sessions.filter((s) => s.running).length} 运行中`])
+          : null,
+    ]),
+  ])
+}
+
+// ── 主面板 ────────────────────────────────────────────────────────────────────
+
+function HubPage(props: { ctx: any }) {
+  const [data, setData] = React.useState<PanelData | null>(null)
+  const [selected, setSelectedRaw] = React.useState<string | null>(hubView) // null = 卡片首页；模块级记忆
+  const [error, setError] = React.useState('')
+  const [showHistory, setShowHistory] = React.useState(false)
+  const [rescanning, setRescanning] = React.useState(false)
+  const setSelected = (v: string | null) => {
+    hubView = v
+    setSelectedRaw(v)
+  }
+
+  const [loadedAt, setLoadedAt] = React.useState(0)
+  const load = React.useCallback(async () => {
+    try {
+      setData(await api<PanelData>('panel'))
+      setLoadedAt(Date.now())
+      setError('')
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    }
+  }, [])
+
+  React.useEffect(() => {
+    void load()
+    const timer = setInterval(() => void load(), 8000)
+    return () => clearInterval(timer)
+  }, [load])
+
+  const jump = React.useCallback((sessionId: string) => {
+    // 诊断版跳转：任何失败都显示在面板头部，不静默
+    void (async () => {
+      // 跳转后抓取客户端现场快照回传 host（排障）
+      const capture = (phase: string) => {
+        try {
+          const sessions = props.ctx.get('sessions')
+          const snap = sessions?.list?.getSnapshot?.()
+          const row = snap?.byId?.[sessionId]
+          const retain = sessions?.retainInfo?.(sessionId)?.getSnapshot?.()
+          let binding: unknown = null
+          try {
+            const b = sessions?.binding?.(sessionId)
+            binding = b ? { keys: Object.keys(b) } : null
+          } catch (e) { binding = 'err:' + String(e).slice(0, 80) }
+          const uw = props.ctx.get('uiWorkspace')
+          void api('jumpReport', {
+            phase,
+            sessionId,
+            catalog: { phase: snap?.phase, known: snap?.ids?.includes?.(sessionId), retainedBy: row?.retainedBy ?? null },
+            retainInfo: retain ?? null,
+            binding,
+            uwCtor: uw?.constructor?.name ?? null,
+            sameSessions: uw ? uw.sessions === sessions : null,
+            href: location.href,
+          }).catch(() => {})
+        } catch { /* 采样失败忽略 */ }
+      }
+      try {
+        const uw = props.ctx.get('uiWorkspace')
+        if (!uw || typeof uw.openSession !== 'function') {
+          setError('跳转失败：当前客户端没有 uiWorkspace 导航服务')
+          return
+        }
+        // 先让宿主把冷会话的 Agent 拉活（对齐原生侧栏打开会话的完整路径），再切面板
+        const warm = await api<{ ok: boolean; error?: string }>('warm', { sessionId })
+        if (!warm.ok) {
+          setError(`会话预热失败：${warm.error ?? '未知原因'}`)
+          return
+        }
+        const sessions = props.ctx.get('sessions')
+        const ids: string[] | undefined = sessions?.list?.getSnapshot?.()?.ids
+        const known = !Array.isArray(ids) || ids.includes(sessionId)
+        console.log('[research-hub] 跳转会话', sessionId, '目录内:', known)
+        setReturnTarget({ sessionId })
+        capture('before')
+        // 主路径：retain 主视图引用（实测可靠）；openSession 作为导航器的记账辅助。
+        // 探针只同时持有一个：下一次跳转或返回指挥中心时释放上一个。
+        try { currentProbe?.release?.() } catch { /* 忽略 */ }
+        currentProbe = null
+        try {
+          currentProbe = sessions?.retain?.(sessionId, { source: 'mainView' }) ?? null
+        } catch (e) {
+          console.error('[research-hub] retain 失败', e)
+        }
+        uw.openSession(sessionId)
+        capture('sync')
+        if (!known) setError(`提示：会话 ${sessionId.slice(0, 14)}… 不在当前客户端目录中，已尝试打开`)
+        setTimeout(() => capture('t+1.2s'), 1200)
+        setTimeout(() => capture('t+4s'), 4000)
+      } catch (e) {
+        const message = e instanceof Error ? e.message : String(e)
+        console.error('[research-hub] 跳转会话失败', sessionId, e)
+        setError(`跳转失败：${message}`)
+        capture('error')
+      }
+    })()
+  }, [props.ctx])
+
+  if (!data) {
+    return h('div', { style: { ...S.root, alignItems: 'center', justifyContent: 'center' } },
+      h('span', { style: S.muted }, error || '正在加载指挥中心…'))
+  }
+
+  const itemCard = (it: HubItemView) =>
+    h(ItemCard, { key: it.id, item: it, now: data.now, onChanged: load, onJump: jump })
+
+  const section = (title: string, list: HubItemView[], emptyText?: string) => {
+    const tone = title.includes('问题') ? C.warn : title.includes('交付') ? C.ok : title.includes('历史') ? C.text3 : C.brand
+    const icon = title.includes('问题') ? 'question' : title.includes('交付') ? 'package' : 'inbox'
+    return h('section', { key: title, style: { marginBottom: 22, minWidth: 0 } }, [
+      h('h2', { key: 't', className: 'rh-section-heading' }, [
+        h('span', { key: 'icon', style: { padding: 6, borderRadius: 8, color: tone, background: tint(tone, 9), display: 'inline-flex' } }, h(Icon, { name: icon, size: 14 })),
+        h('span', { key: 'label' }, title),
+        h('span', { key: 'count', style: { color: C.text2, fontSize: 11, fontWeight: 500, background: tint(C.text2, 7), padding: '1px 7px', borderRadius: 5 } }, list.length),
+      ]),
+      list.length > 0
+        ? list.map(itemCard)
+        : emptyText
+          ? h('div', {
+            key: 'e',
+            style: { ...S.muted, display: 'flex', alignItems: 'center', gap: 7, padding: '10px 12px', borderRadius: 9, background: tint(tone, 5), border: `1px solid ${tint(tone, 18)}` },
+          }, [h(Icon, { key: 'i', name: icon as keyof typeof ICON_PATHS, size: 14, color: tone }), h('span', { key: 't' }, emptyText)])
+          : null,
+    ])
+  }
+
+  const sessionSection = (title: string, sessions: SessionView[]) =>
+    h('section', { key: title, style: { marginBottom: 22, minWidth: 0 } }, [
+      h('h2', { key: 't', className: 'rh-section-heading' }, [
+        h('span', { key: 'icon', style: { padding: 6, borderRadius: 8, color: C.info, background: tint(C.info, 9), display: 'inline-flex' } }, h(Icon, { name: 'compass', size: 14 })),
+        h('span', { key: 'title' }, title),
+        h('span', { key: 'count', style: { color: C.text2, fontSize: 11, fontWeight: 500, background: tint(C.text2, 7), padding: '1px 7px', borderRadius: 5 } }, sessions.length),
+      ]),
+      h('div', { key: 'list', style: { background: C.surface, borderRadius: 14, border: `1px solid ${tint(C.text2, 17)}`, padding: '4px 12px' } }, sessions.length > 0
+        ? sessions.map((s) => h(SessionBindRow, { key: s.id, session: s, projects: data.projects, onChanged: load, onJump: jump }))
+        : h('div', { style: { ...S.muted, padding: '16px 4px' } }, '尚无会话归入此项目')),
+    ])
+
+  const pageTitle = selected === null ? '指挥中心'
+    : selected === '__all__' ? '全部待处理'
+    : selected === '__unassigned__' ? '未分配'
+    : selected === '__trash__' ? '回收站'
+    : data.projects.find((p) => p.id === selected)?.name ?? selected
+  const sessionTotal = data.projects.reduce((n, p) => n + p.sessions.length, data.unassignedSessions.length)
+  const runningTotal = data.projects.reduce((n, p) => n + p.sessions.filter((s) => s.running).length, data.unassignedSessions.filter((s) => s.running).length)
+  const header = h('div', { key: 'header', className: 'rh-toolbar', style: S.header }, [
+    selected !== null
+      ? h('button', { key: 'back', style: S.btn, onClick: () => setSelected(null), ...buttonHover() }, '← 返回')
+      : h('span', { key: 'icon', style: { display: 'inline-flex', padding: 10, borderRadius: 12, color: C.text, background: tint(HUES[0], 12) } }, h(Icon, { name: 'compass', size: 22 })),
+    h('div', { key: 'identity', style: { flex: 1, minWidth: 140 } }, [
+      h('div', { key: 'eyebrow', style: { color: C.text2, fontSize: 10, letterSpacing: '0.07em', marginBottom: 2 } }, selected === null ? '研究工作台' : '指挥中心 / 项目与消息'),
+      h('h1', { key: 'title', style: { fontSize: 18, fontWeight: 700, letterSpacing: '-0.035em', margin: 0, lineHeight: 1.4, overflowWrap: 'anywhere' } }, pageTitle),
+    ]),
+    h('div', { key: 'actions', className: 'rh-toolbar-actions', style: { ...S.row, gap: 8 } }, [
+      loadedAt > 0 ? h('span', {
+        key: 'upd', className: 'rh-toolbar-sync', style: { ...S.muted, fontSize: 10, marginRight: 5, display: 'inline-flex', alignItems: 'center', gap: 5 }, title: '每 8 秒自动刷新',
+      }, [h('span', { key: 'dot', style: { width: 5, height: 5, borderRadius: '50%', background: C.ok } }), `更新于 ${new Date(loadedAt).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}`]) : null,
+      h('button', {
+        key: 'refresh', style: { ...S.btn, opacity: rescanning ? 0.6 : 1, display: 'inline-flex', alignItems: 'center', gap: 6 },
+        disabled: rescanning, 'aria-busy': rescanning, ...buttonHover(),
+        onClick: () => {
+          setRescanning(true)
+          void api('rescan')
+            .then((v) => { setData(v as PanelData); setLoadedAt(Date.now()) })
+            .catch((e) => setError(e instanceof Error ? e.message : String(e)))
+            .finally(() => setRescanning(false))
+        },
+      }, [h(Icon, { key: 'i', name: 'refresh', size: 13 }), rescanning ? '扫描中…' : '重新扫描']),
+      h('button', {
+        key: 'new', style: { ...S.btnPrimary, display: 'inline-flex', alignItems: 'center', gap: 5 },
+        ...buttonHover(tint(C.brand, 18), tint(C.brand, 28), tint(C.brand, 45), tint(C.brand, 65)),
+        onClick: () => {
+          const name = window.prompt('新项目名称（例如 sway-paper）：')
+          if (name?.trim()) void api('addProject', { name: name.trim() }).then(load).catch((e) => setError(String(e)))
+        },
+      }, [h(Icon, { key: 'i', name: 'plus', size: 13 }), '新建项目']),
+    ]),
+  ])
+
+  // ── 首页：常驻收件箱在上，项目网格与最近会话在下 ──
+  let body: React.ReactNode
+  if (selected === null) {
+    const cards: React.ReactNode[] = []
+    const sorted = [...data.projects].sort(
+      (a, b) => (b.counts.questions + b.counts.deliverables + b.counts.urgent * 10) - (a.counts.questions + a.counts.deliverables + a.counts.urgent * 10) || a.name.localeCompare(b.name) || a.id.localeCompare(b.id),
+    )
+    for (const p of sorted) {
+      cards.push(h(ProjectCard, {
+        key: p.id,
+        name: p.name,
+        icon: 'folder',
+        hue: projectHue(p.id),
+        counts: p.counts,
+        sessions: p.sessions,
+        pendingItems: data.items.filter((it) => it.projectId === p.id && it.status === 'pending'),
+        now: data.now,
+        onOpen: () => setSelected(p.id),
+        onChanged: load,
+        onJump: jump,
+      }))
+    }
+    if (data.unassignedSessions.length > 0 || data.unassignedCounts.questions + data.unassignedCounts.deliverables > 0) {
+      cards.push(h(ProjectCard, {
+        key: '__unassigned__',
+        name: '未分配',
+        icon: 'tray',
+        hue: C.text3,
+        counts: data.unassignedCounts,
+        sessions: data.unassignedSessions,
+        pendingItems: data.items.filter((it) => it.projectId === null && it.status === 'pending'),
+        now: data.now,
+        note: '会话归属可在详情页调整',
+        onOpen: () => setSelected('__unassigned__'),
+        onChanged: load,
+        onJump: jump,
+      }))
+    }
+    body = h('div', { key: 'home', style: { width: '100%', maxWidth: 1600, margin: '0 auto' } }, [
+      h(HomeInbox, {
+        key: 'inbox', items: data.items, projects: data.projects, now: data.now, total: data.pending,
+        counts: data.projects.reduce((sum, p) => ({ questions: sum.questions + p.counts.questions, deliverables: sum.deliverables + p.counts.deliverables, urgent: sum.urgent + p.counts.urgent }), { ...data.unassignedCounts }),
+        onOpen: () => setSelected('__all__'), onChanged: load, onJump: jump,
+      }),
+      h('div', { key: 'projects-head', style: { ...S.row, marginBottom: 16, gap: 12 } }, [
+        h('div', { key: 'heading', style: { flex: 1, minWidth: 180 } }, [
+          h('h2', { key: 'title', style: { margin: 0, fontSize: 17, fontWeight: 650, letterSpacing: '-0.02em' } }, '项目总览'),
+          h('span', { key: 'desc', style: { ...S.muted, fontSize: 11 } }, `${data.projects.length} 个项目 · ${sessionTotal} 个会话${runningTotal > 0 ? ` · ${runningTotal} 个运行中` : ''}`),
+        ]),
+        h('span', { key: 'spacer', style: { flex: 1 } }),
+        data.trashedSessions.length > 0
+          ? h('button', {
+            key: 'trash', type: 'button', style: { ...S.btn, color: C.text2 },
+            onClick: () => setSelected('__trash__'), ...buttonHover(),
+          }, [h(Icon, { key: 'icon', name: 'trash', size: 12 }), ` 回收站（${data.trashedSessions.length}）`])
+          : null,
+      ]),
+      cards.length > 0
+        ? h(ProjectGrid, { key: 'grid' }, cards)
+        : h('div', { key: 'empty', style: S.muted }, '暂无项目。可以新建项目，或重新扫描发现项目。'),
+    ])
+  } else if (selected === '__trash__') {
+    body = h('div', { key: 'trash', style: { maxWidth: 860 } }, [
+      h('div', { key: 't', style: { fontSize: 13, fontWeight: 600, marginBottom: 8, color: C.text2 } }, `回收站（${data.trashedSessions.length}）`),
+      data.trashedSessions.length === 0
+        ? h('div', { key: 'e', style: S.muted }, '回收站是空的。未分配区会话行上的垃圾桶按钮会把不重要的会话扫到这里。')
+        : data.trashedSessions.map((s) =>
+          h('div', { key: s.id, style: { ...S.row, padding: '7px 0', borderBottom: `1px solid ${C.border}` } }, [
+            h(Icon, { key: 'i', name: 'trash', size: 13, color: C.text3 }),
+            h('span', { key: 't', style: { flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, s.title || s.id.slice(0, 13)),
+            h('span', { key: 'a', style: S.muted }, `扫入于 ${ago(data.now, s.at)}`),
+            h('button', {
+              key: 'restore',
+              style: S.btn,
+              onClick: () => void api('restoreSession', { sessionId: s.id }).then(load),
+            }, '恢复'),
+          ]),
+        ),
+    ])
+  } else if (selected === '__all__') {
+    const pendingQ = data.items.filter((it) => it.status === 'pending' && it.type === 'question')
+    const pendingD = data.items.filter((it) => it.status === 'pending' && it.type === 'deliverable')
+    body = h('div', { className: 'rh-inbox-grid' }, [
+      section('待回答问题', pendingQ, '没有待回答的问题'),
+      section('待查看交付', pendingD, '没有待查看的交付'),
+    ])
+  } else if (selected === '__unassigned__') {
+    const pendingItems = data.items.filter((it) => it.projectId === null && it.status === 'pending')
+    body = h('div', { className: 'rh-detail-grid' }, [
+      sessionSection('未分配会话', data.unassignedSessions),
+      section('未分配消息', pendingItems, '没有未分配的消息'),
+    ])
+  } else {
+    const project = data.projects.find((p) => p.id === selected)
+    const items = data.items.filter((it) => it.projectId === selected)
+    const pendingItems = items.filter((it) => it.status === 'pending')
+    const history = items.filter((it) => it.status !== 'pending')
+    body = h('div', { className: 'rh-detail-grid' }, [
+      sessionSection('项目会话', project?.sessions ?? []),
+      h('div', { key: 'messages' }, [
+        section('待处理', pendingItems, '没有待处理的消息'),
+        h('button', { key: 'hist-head', type: 'button', 'aria-expanded': showHistory, style: { ...S.btn, ...S.row, cursor: 'pointer', marginBottom: 14, background: 'transparent' }, onClick: () => setShowHistory(!showHistory) }, [
+          h('span', { key: 'arrow', style: { ...S.muted, fontSize: 10 } }, showHistory ? '⌄' : '›'),
+          h('span', { key: 't', style: { fontSize: 12, color: C.text2 } }, `历史记录（${history.length}）`),
+        ]),
+        showHistory ? section('历史记录', history) : null,
+      ]),
+    ])
+  }
+
+  return h('div', { className: 'rh-root', style: S.root }, [
+    header,
+    h('style', { key: 'styles' }, HUB_CSS),
+    h('div', { key: 'content', className: 'rh-content', style: S.content }, [
+      error ? h('div', { key: 'error', role: 'alert', style: { maxWidth: 1600, margin: '0 auto 18px', padding: '10px 14px', borderRadius: 10, color: C.err, background: tint(C.err, 8), border: `1px solid ${tint(C.err, 20)}` } }, error) : null,
+      h('div', { key: 'canvas', style: { maxWidth: 1600, margin: '0 auto' } }, body),
+    ]),
+  ])
+}
+
+// ── panellist 图标（含角标） ──────────────────────────────────────────────────
+
+function HubIcon() {
+  const [badge, setBadge] = React.useState<{ pending: number; urgent: number } | null>(null)
+  React.useEffect(() => {
+    let alive = true
+    const tick = async () => {
+      try {
+        const v = await api<{ pending: number; urgent: number }>('badge')
+        if (alive) setBadge(v)
+      } catch { /* 轮询失败保持旧值 */ }
+    }
+    void tick()
+    const timer = setInterval(() => void tick(), 15000)
+    return () => {
+      alive = false
+      clearInterval(timer)
+    }
+  }, [])
+
+  return h('span', { style: { position: 'relative', display: 'inline-flex' } }, [
+    h(Icon, { key: 'i', name: 'compass', size: 16 }),
+    badge && badge.pending > 0
+      ? h('span', {
+        key: 'b',
+        style: {
+          position: 'absolute', top: -6, right: -8, minWidth: 14, height: 14, borderRadius: 7,
+          background: `color-mix(in srgb, ${badge.urgent > 0 ? C.err : C.warn} 18%, transparent)`, color: badge.urgent > 0 ? C.err : C.warn,
+          fontSize: 9, fontWeight: 700, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '0 3px',
+        },
+      }, badge.pending > 99 ? '99+' : String(badge.pending))
+      : null,
+  ])
+}
+
+// ── 会话头部"返回指挥中心"按钮（仅在从指挥中心跳转过来的会话上显示） ──────────
+
+// session scope 的 sessionId 指向这个头部实际显示的会话。
+// mainView 引用可能同时存在多个，更新时间不代表当前显示的会话。
+function HubReturnBar(props: { ctx: any; sessionId: string }) {
+  const [, force] = React.useReducer((n: number) => n + 1, 0)
+  React.useEffect(() => {
+    const fn = () => force()
+    returnListeners.add(fn)
+    return () => { returnListeners.delete(fn) }
+  }, [])
+  if (!returnTarget || props.sessionId !== returnTarget.sessionId) return null
+  return h('button', {
+    style: {
+      ...S.btn, display: 'inline-flex', alignItems: 'center', gap: 5,
+      color: C.info, borderColor: `color-mix(in srgb, ${C.info} 40%, transparent)`,
+    },
+    title: '回到指挥中心（保留你离开时的页面）',
+    onClick: () => {
+      setReturnTarget(null)
+      // 探针引用在返回时释放：openSession 成功的会话由导航器继续持有，没成功的正常关闭
+      try { currentProbe?.release?.() } catch { /* 忽略 */ }
+      currentProbe = null
+      try {
+        props.ctx.get('layout')?.selectPanel(PANEL_ID)
+      } catch (e) {
+        console.error('[research-hub] 返回指挥中心失败', e)
+      }
+    },
+  }, '← 指挥中心')
+}
+
+// ── 注册 ──────────────────────────────────────────────────────────────────────
+
+type ClientContext = {
+  slots: SlotsService
+  get(name: string): any
+  effect(cb: () => () => void, label?: string): () => void
+}
+
+export const inject = ['slots']
+
+export function apply(ctx: ClientContext): void {
+  ctx.effect(() => ctx.slots.inject('main', () =>
+    (ctx.slots as any).register(
+      { name: 'main', key: PANEL_ID },
+      () => h(HubPage, { ctx }),
+    ),
+  ), 'research-hub: main panel')
+
+  ctx.effect(() => ctx.slots.inject('sidebar.panellist', () =>
+    (ctx.slots as any).register(
+      { name: 'sidebar.panellist', id: PANEL_ID, order: 20, label: () => '指挥中心' },
+      HubIcon,
+    ),
+  ), 'research-hub: panellist icon')
+
+  ctx.effect(() => ctx.slots.inject('conversation.session.header.utilities', () =>
+    (ctx.slots as any).register(
+      {
+        name: 'conversation.session.header.utilities',
+        id: 'research-hub-return',
+        order: 30,
+        // sessionId 由 session scope 提供，不通过业务注入重复覆盖。
+        inject: () => ({ ctx }),
+      },
+      HubReturnBar,
+    ),
+  ), 'research-hub: return button')
+}
