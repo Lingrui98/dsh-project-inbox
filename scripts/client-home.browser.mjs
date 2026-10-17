@@ -152,6 +152,7 @@ try {
         await project.locator('button[title^="打开会话："]').first().click()
         await page.waitForFunction(() => window.__events.some(([event]) => event === 'open'))
         assert.deepEqual(await page.evaluate(() => window.__events), [['retain', 'session-1'], ['open', 'session-1']])
+        await page.waitForFunction(() => window.__events.some(([event, id]) => event === 'release' && id === 'session-1'), null, { timeout: 3000 })
         assert.equal(await inbox.count(), 1)
         // Mount the registered session-scoped header after unmounting the hub.
         await page.evaluate(() => window.__renderHeader('session-1'))

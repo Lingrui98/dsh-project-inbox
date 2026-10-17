@@ -22,6 +22,16 @@ let hubView: string | null = null
 let returnTarget: { sessionId: string } | null = null
 /** 跳转探针：retain 主视图引用（唯一同时持有的一个，下次跳转或返回时释放）。 */
 let currentProbe: { release(): void } | null = null
+let probeReleaseTimer: ReturnType<typeof setTimeout> | null = null
+let probeWatchCleanup: (() => void) | null = null
+function releaseCurrentProbe(): void {
+  if (probeReleaseTimer) clearTimeout(probeReleaseTimer)
+  probeReleaseTimer = null
+  try { currentProbe?.release?.() } catch { /* 忽略 */ }
+  currentProbe = null
+  try { probeWatchCleanup?.() } catch { /* 忽略 */ }
+  probeWatchCleanup = null
+}
 const returnListeners = new Set<() => void>()
 function setReturnTarget(v: { sessionId: string } | null): void {
   returnTarget = v
@@ -910,16 +920,35 @@ function HubPage(props: { ctx: any }) {
         setReturnTarget({ sessionId })
         capture('before')
         // 主路径：retain 主视图引用（实测可靠）；openSession 作为导航器的记账辅助。
-        // 探针只同时持有一个：下一次跳转或返回指挥中心时释放上一个。
-        try { currentProbe?.release?.() } catch { /* 忽略 */ }
-        currentProbe = null
+        // 探针只在目标会话仍是当前主视图时保留。用户从侧栏切换到其他会话或新建会话后，立即释放探针，不能阻塞原生导航。
+        releaseCurrentProbe()
         try {
           currentProbe = sessions?.retain?.(sessionId, { source: 'mainView' }) ?? null
+          const list = sessions?.list
+          const onListChange = () => {
+            const snapshot = list?.getSnapshot?.()
+            const currentId = snapshot?.byId && Object.values<any>(snapshot.byId).find((row) => (row?.retainedBy?.mainView ?? 0) > 0)?.id
+            if (currentId && currentId !== sessionId) {
+              setReturnTarget(null)
+              releaseCurrentProbe()
+            }
+          }
+          const unsubscribe = list?.subscribe?.(onListChange)
+          probeWatchCleanup = () => { try { unsubscribe?.() } catch { /* 忽略 */ } }
         } catch (e) {
           console.error('[research-hub] retain 失败', e)
         }
-        uw.openSession(sessionId)
+        try {
+          uw.openSession(sessionId)
+        } catch (error) {
+          setReturnTarget(null)
+          releaseCurrentProbe()
+          throw error
+        }
         capture('sync')
+        // Allow the host navigation bookkeeping to settle, then release the temporary retain.
+        // Keeping this probe forever prevents the native sidebar from selecting another session.
+        probeReleaseTimer = setTimeout(() => releaseCurrentProbe(), 1500)
         if (!known) setError(`提示：会话 ${sessionId.slice(0, 14)}… 不在当前客户端目录中，已尝试打开`)
         setTimeout(() => capture('t+1.2s'), 1200)
         setTimeout(() => capture('t+4s'), 4000)
@@ -1189,8 +1218,7 @@ function HubReturnBar(props: { ctx: any; sessionId: string }) {
     onClick: () => {
       setReturnTarget(null)
       // 探针引用在返回时释放：openSession 成功的会话由导航器继续持有，没成功的正常关闭
-      try { currentProbe?.release?.() } catch { /* 忽略 */ }
-      currentProbe = null
+      releaseCurrentProbe()
       try {
         props.ctx.get('layout')?.selectPanel(PANEL_ID)
       } catch (e) {
