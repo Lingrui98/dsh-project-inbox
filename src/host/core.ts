@@ -5,7 +5,7 @@
 import { randomUUID } from 'node:crypto'
 import { existsSync, readdirSync, readFileSync } from 'node:fs'
 import { basename, join } from 'node:path'
-import type { AuqQuestionView, Binding, HubItem, HubStore, Project } from './store.js'
+import type { AuqQuestionView, Binding, HubItem, HubStore, Project, TurnAlertKind, TurnAlertView } from './store.js'
 
 /** 宿主服务的最小结构面（运行时已验证存在）。 */
 export interface HubServices {
@@ -45,9 +45,305 @@ function paperTomlName(text: string): string | undefined {
   return m?.[1]
 }
 
+// ── ask_user_question 事件解析 ──────────────────────────────────────────────
+
+/** 前台阻塞提问不可代答时的提示。 */
+const AUQ_SESSION_ONLY = '该问题显示在前台会话的提问卡片上，请在会话内回答；回答后此处会自动关闭'
+/** 已声明可代答但实际应答失败时的提示。 */
+const AUQ_ANSWER_FAILED = '会话中的问题当前不可应答（会话未运行或问题已变化），请在会话内回答'
+
+/**
+ * 从 tool/call 记录的 arguments 文本解析问题批。
+ * 记录不可读或没有有效问题时返回 null；内容按服务词汇归一（multi_select → multiSelect）。
+ */
+export function questionsOfArguments(argumentsText: unknown): AuqQuestionView[] | null {
+  if (typeof argumentsText !== 'string' || argumentsText.trim() === '') return null
+  let parsed: any
+  try {
+    parsed = JSON.parse(argumentsText)
+  } catch {
+    return null
+  }
+  const raw = parsed?.questions
+  if (!Array.isArray(raw)) return null
+  const questions: AuqQuestionView[] = []
+  for (const q of raw) {
+    if (!q || typeof q !== 'object') continue
+    const id = String((q as any).id ?? '').trim()
+    const question = String((q as any).question ?? '').trim()
+    if (!id || !question) continue
+    const options = Array.isArray((q as any).options)
+      ? (q as any).options
+        .filter((o: any) => o && typeof o.label === 'string')
+        .map((o: any) => ({ label: o.label, ...(typeof o.description === 'string' ? { description: o.description } : {}) }))
+      : undefined
+    questions.push({
+      id,
+      question,
+      header: typeof (q as any).header === 'string' ? (q as any).header : undefined,
+      options,
+      multiSelect: Boolean((q as any).multi_select ?? (q as any).multiSelect),
+    })
+  }
+  return questions.length > 0 ? questions : null
+}
+
+/** 工具结果或迟答复文本里的回答批；没有可读回答时返回 null。 */
+function answersOfContent(content: unknown): { id: string; selected: string[]; custom?: string }[] | null {
+  if (!Array.isArray(content)) return null
+  const text = content.find((block: any) => block?.type === 'text' && typeof block.text === 'string')
+  if (!text) return null
+  let parsed: any
+  try {
+    parsed = JSON.parse((text as any).text)
+  } catch {
+    return null
+  }
+  if (!Array.isArray(parsed?.answers)) return null
+  return parsed.answers
+    .filter((answer: any) => answer && typeof answer.id === 'string')
+    .map((answer: any) => ({
+      id: String(answer.id),
+      selected: Array.isArray(answer.selected) ? answer.selected.filter((s: unknown) => typeof s === 'string') : [],
+      ...(typeof answer.custom === 'string' ? { custom: answer.custom } : {}),
+    }))
+}
+
+/** 工具结果是否是"超时但问题仍可回答"的 pending 载荷。 */
+function resultIsPending(content: unknown): boolean {
+  if (!Array.isArray(content)) return false
+  const text = content.find((block: any) => block?.type === 'text' && typeof block.text === 'string')
+  if (!text) return false
+  try {
+    const parsed = JSON.parse((text as any).text)
+    return typeof parsed === 'object' && parsed !== null && parsed.pending === true
+  } catch {
+    return false
+  }
+}
+
+/** 回答批 → 一行摘要，写入收件箱历史。 */
+function summarizeAnswers(answers: { id: string; selected: string[]; custom?: string }[]): string {
+  return answers
+    .map((answer) => [...answer.selected, ...(answer.custom ? [answer.custom] : [])].join('、'))
+    .filter(Boolean)
+    .join('；')
+}
+
+/**
+ * 折叠一段会话事件，返回仍然可回答的 ask_user_question 调用。
+ * 这是 `userQuestions` 投影的镜像版本，区别是不要求 timed 工具：
+ * legacy 阻塞式提问同样被跟踪。
+ */
+export function foldOpenAuqQuestions(events: readonly any[]): { callId: string; questions: AuqQuestionView[] }[] {
+  const open = new Map<string, AuqQuestionView[]>()
+  for (const event of events) {
+    switch (event?.type) {
+      case 'tool/call': {
+        if (event.data?.name !== 'ask_user_question') break
+        const questions = questionsOfArguments(event.data.arguments)
+        if (questions) open.set(String(event.data.callId), questions)
+        break
+      }
+      case 'tool/ptc-dispatch': {
+        if (event.data?.name !== 'ask_user_question' || event.data.isError) break
+        if (!resultIsPending(event.data.content)) break
+        const questions = questionsOfArguments(JSON.stringify(event.data.arguments))
+        if (questions) open.set(String(event.data.subCallId), questions)
+        break
+      }
+      case 'tool/result': {
+        const callId = String(event.data?.message?.toolCallId ?? '')
+        if (!callId || !open.has(callId)) break
+        // 超时但未回答的问题仍然可回答，保持打开
+        if (resultIsPending(event.data?.message?.content)) break
+        open.delete(callId)
+        break
+      }
+      case 'user/message': {
+        const source = event.data?.source
+        if (source?.kind === 'user-question-reply' && source.callId) open.delete(String(source.callId))
+        break
+      }
+      default:
+        break
+    }
+  }
+  return [...open.entries()].map(([callId, questions]) => ({ callId, questions }))
+}
+
+// ── 会话中断告警 ────────────────────────────────────────────────────────────
+//
+// 会话因模型服务中断、宿主崩溃或主动取消而停在半途时，agent 本身不会再调用
+// hub_post，用户离开会话后无从得知。这里由宿主侧监听 turn/end：
+// 实时事件覆盖进程存活期间的失败，冷读回填覆盖崩溃/重启补记的 interrupted。
+
+/** 默认告警的 turn/end 原因标记。aborted 只认 disposed（宿主关闭或插件重载）。 */
+export const DEFAULT_ALERT_KINDS = ['error', 'interrupted', 'aborted:disposed']
+
+/** 一次中断告警候选：turn/end 里可进收件箱的事实。 */
+export interface TurnAlertCandidate {
+  turn: number
+  kind: TurnAlertKind
+  cause?: string
+  code?: string
+  detail?: string
+  /** 中断事件时间（合成事件复用崩溃前最后一个事件时间）。 */
+  time: number
+}
+
+/** 取消原因 → 一行说明。 */
+const ABORT_CAUSE_TEXT: Record<string, string> = {
+  disposed: '宿主关闭或插件重载中止了运行中的回合',
+  user: '用户取消了回合',
+  parent: '父会话取消了该回合',
+  hook: '插件钩子取消了该回合',
+  legacy: '历史记录中的取消，原因未知',
+}
+
+/** 原因标记是否命中配置：支持 `aborted`（全部原因）与 `aborted:<cause>`。 */
+function alertKindEnabled(kinds: readonly string[], kind: TurnAlertKind, cause?: string): boolean {
+  for (const token of kinds) {
+    if (token === kind) return true
+    if (kind === 'aborted' && token === `aborted:${cause}`) return true
+    if (token === 'all') return true
+  }
+  return false
+}
+
+/**
+ * 从一段会话事件折叠出需要告警的中断回合。
+ * 只读取 `turn/end`；completed / blocked / forked 不算中断。
+ *
+ * 默认只报"日志尾部仍未恢复"的中断：异常 turn/end 之后若已出现新的 turn/start，
+ * 说明会话已被继续，旧中断不再打扰用户。实时路径传入单个 turn/end 事件时，
+ * 该事件本身就是尾部，行为不变。
+ */
+export function foldTurnAlerts(
+  events: readonly any[],
+  kinds: readonly string[] = DEFAULT_ALERT_KINDS,
+  options: { tailOnly?: boolean } = {},
+): TurnAlertCandidate[] {
+  const tailOnly = options.tailOnly !== false
+  const found: { candidate: TurnAlertCandidate; index: number }[] = []
+  let lastTurnStart = -1
+  for (let index = 0; index < events.length; index += 1) {
+    const event = events[index]
+    if (event?.type === 'turn/start') lastTurnStart = index
+    if (event?.type !== 'turn/end') continue
+    const reason = event.data?.reason
+    const turn = Number(event.data?.turn)
+    if (!reason || !Number.isFinite(turn)) continue
+    const time = Number(event.time) || Date.now()
+    if (reason.kind === 'error') {
+      if (!alertKindEnabled(kinds, 'error')) continue
+      const code = typeof reason.error?.code === 'string' ? reason.error.code : undefined
+      const message = typeof reason.error?.message === 'string' ? reason.error.message : ''
+      found.push({
+        index,
+        candidate: {
+          turn,
+          kind: 'error',
+          code,
+          detail: [message, typeof reason.error?.status === 'number' ? `HTTP ${reason.error.status}` : ''].filter(Boolean).join('，') || undefined,
+          time,
+        },
+      })
+    } else if (reason.kind === 'interrupted') {
+      if (!alertKindEnabled(kinds, 'interrupted')) continue
+      found.push({ index, candidate: { turn, kind: 'interrupted', detail: '会话进程在回合运行中被中断（宿主崩溃或重启）', time } })
+    } else if (reason.kind === 'max-tokens') {
+      if (!alertKindEnabled(kinds, 'max-tokens')) continue
+      found.push({ index, candidate: { turn, kind: 'max-tokens', detail: '输出达到 token 上限，回合提前结束', time } })
+    } else if (reason.kind === 'aborted') {
+      const cause = typeof reason.reason?.kind === 'string' ? reason.reason.kind : 'legacy'
+      if (!alertKindEnabled(kinds, 'aborted', cause)) continue
+      found.push({ index, candidate: { turn, kind: 'aborted', cause, detail: ABORT_CAUSE_TEXT[cause] ?? `回合被取消（${cause}）`, time } })
+    }
+  }
+  if (!tailOnly) return found.map((entry) => entry.candidate)
+  const tail = found[found.length - 1]
+  return tail && tail.index > lastTurnStart ? [tail.candidate] : []
+}
+
+/** 失败码是否值得展示：UNKNOWN 是宿主对非 LLM 错误的兜底码，没有信息量。 */
+function showableCode(code?: string): string | undefined {
+  return code && code !== 'UNKNOWN' ? code : undefined
+}
+
+/** 告警条目标题：一眼看出中断类别。 */
+export function alertTitle(candidate: TurnAlertCandidate): string {
+  if (candidate.kind === 'error') {
+    const code = showableCode(candidate.code)
+    return `会话中断：回合执行失败${code ? `（${code}）` : ''}`
+  }
+  if (candidate.kind === 'interrupted') return '会话中断：会话进程崩溃'
+  if (candidate.kind === 'max-tokens') return '会话中断：输出达到上限'
+  return candidate.cause === 'disposed' ? '会话中断：宿主关闭时回合被中止' : '会话中断：回合被取消'
+}
+
+/** 告警条目正文：轮次、原因、继续方式。 */
+export function alertBody(candidate: TurnAlertCandidate): string {
+  const code = showableCode(candidate.code)
+  const reason = candidate.kind === 'error'
+    ? `回合执行失败${code ? `（${code}）` : ''}`
+    : candidate.detail || '回合在完成前结束'
+  return [
+    `轮次：第 ${candidate.turn} 轮运行中被中断。`,
+    `原因：${reason}。`,
+    candidate.kind === 'error' && candidate.detail ? `详情：${candidate.detail}` : '',
+    '如何继续：回复任意内容会继续该会话，也可以跳转到会话处理。确认无需处理时忽略本条。',
+  ].filter(Boolean).join('\n')
+}
+
+/** 告警条目去重键：同一会话同一轮只告警一次。 */
+export function alertKeyOf(sessionId: string, turn: number): string {
+  return `${sessionId}#${turn}`
+}
+
+/**
+ * 冷读观测里 `interrupted` 可能是合成的：session-query 会给"末尾回合未闭合"的
+ * 冷日志补一条 interrupted 关闭事件。别的进程里正在运行的会话（例如无人值守的
+ * headless 任务）同样是冷日志，直接告警会误报。因此 prepared 观测的 interrupted
+ * 要等最后活动静默足够久才判定为真中断；未满足条件时推迟（deferred），不推进扫描游标。
+ */
+export interface AlertSelection {
+  /** 现在就该投递的候选。 */
+  alerts: TurnAlertCandidate[]
+  /** 有候选因静默时间不足被推迟，本轮不应推进扫描游标。 */
+  deferred: boolean
+}
+
+export function selectAlertCandidates(
+  candidates: readonly TurnAlertCandidate[],
+  options: {
+    /** 观测来源：live 表示会话在本进程存活，prepared 表示冷读。 */
+    source: 'live' | 'prepared'
+    now: number
+    /** 回填时间窗（毫秒）。 */
+    windowMs: number
+    /** prepared 观测的 interrupted 需要静默多久才判定为真（毫秒）。 */
+    interruptedGraceMs: number
+  },
+): AlertSelection {
+  const alerts: TurnAlertCandidate[] = []
+  let deferred = false
+  for (const candidate of candidates) {
+    if (candidate.time < options.now - options.windowMs) continue
+    if (candidate.kind === 'interrupted' && options.source !== 'live') {
+      if (options.now - candidate.time < options.interruptedGraceMs) {
+        deferred = true
+        continue
+      }
+    }
+    alerts.push(candidate)
+  }
+  return { alerts, deferred }
+}
+
 export class Hub {
   /** 归因缓存：title 变化时重算。 */
-  private inferCache = new Map<string, { title: string; projectId: string | null }>()
+  private inferCache = new Map<string, { title: string; first?: string; projectId: string | null }>()
 
   constructor(
     private store: HubStore,
@@ -155,6 +451,7 @@ export class Hub {
       const binding: Binding = { projectId: inferred, locked: false, by: 'auto', updatedAt: Date.now() }
       if (!explicit || explicit.projectId !== inferred) {
         this.store.data.bindings[sessionId] = binding
+        this.syncPendingItems(sessionId, inferred)
         this.store.touch()
       }
       return binding
@@ -163,9 +460,15 @@ export class Hub {
   }
 
   setBinding(sessionId: string, projectId: string | null, by: 'user' | 'agent'): Binding {
+    // A user choosing “unassigned” is an explicit decision. Keep it locked so
+    // the next panel scan does not immediately infer the previous project again.
     const binding: Binding = { projectId, locked: by === 'user', by, updatedAt: Date.now() }
-    if (projectId === null) delete this.store.data.bindings[sessionId]
-    else this.store.data.bindings[sessionId] = binding
+    this.store.data.bindings[sessionId] = binding
+    // Existing pending messages follow the session's explicit project choice.
+    // This prevents a message created before auto-binding from staying orphaned.
+    for (const item of this.store.data.items) {
+      if (item.sessionId === sessionId && item.status === 'pending') item.projectId = projectId
+    }
     this.store.touch()
     return binding
   }
@@ -289,18 +592,18 @@ export class Hub {
       const obs = await this.services.sessionQuery.readTitle(sessionId)
       title = obs?.title ?? ''
     } catch { /* 标题读不到 */ }
-    const cached = this.inferCache.get(sessionId)
-    if (cached && cached.title === title) return cached.projectId
     const first = await this.scanFirstUserMessage(sessionId)
+    const cached = this.inferCache.get(sessionId)
+    if (cached && cached.title === title && cached.first === first) return cached.projectId
     const projectId = this.matchText(title + '\n' + first)
-    this.inferCache.set(sessionId, { title, projectId })
+    this.inferCache.set(sessionId, { title, first, projectId })
     return projectId
   }
 
   /** 轻量推断：只用给定标题。面板批量路径用。 */
   inferFromTitle(sessionId: string, title: string): string | null {
     const cached = this.inferCache.get(sessionId)
-    if (cached && cached.title === title) return cached.projectId
+    if (cached && cached.title === title && cached.first === undefined) return cached.projectId
     const projectId = this.matchText(title)
     if (projectId) this.inferCache.set(sessionId, { title, projectId })
     return projectId
@@ -368,9 +671,10 @@ export class Hub {
     title: string
     body?: string
     priority?: 'normal' | 'urgent'
-    source: 'tool' | 'auq'
+    source: HubItem['source']
     projectId?: string | null
     auq?: HubItem['auq']
+    alert?: HubItem['alert']
   }): Promise<HubItem> {
     let projectId = input.projectId
     if (projectId === undefined) {
@@ -394,34 +698,55 @@ export class Hub {
       source: input.source,
       createdAt: Date.now(),
       auq: input.auq,
+      alert: input.alert,
+      // AUQ 条目默认不可代答；会话投影确认 continued 后才置真。
+      auqAnswerable: input.source === 'auq' ? false : undefined,
     }
     this.store.data.items.push(item)
     this.store.touch()
     return item
   }
 
-  /** AUQ 镜像：同一 callId 只建一条。返回消息 id，重复时返回已有 id。 */
+  private auqInflight = new Map<string, Promise<string>>()
+
+  /** 会话恢复运行的时刻（内存态）：用于抵消"告警写入前会话已开新一轮"的竞态。 */
+  private resumeMarks = new Map<string, number>()
+
+  /** AUQ 镜像：同一会话内 callId 只建一条。返回消息 id，重复时返回已有 id。 */
   async upsertAuqItem(sessionId: string, callId: string, questions: AuqQuestionView[]): Promise<string> {
-    const existing = this.store.data.items.find((it) => it.source === 'auq' && it.auq?.callId === callId)
+    const existing = this.findAuqItem(sessionId, callId)
     if (existing) return existing.id
-    const first = questions[0]
-    const title = (first?.header || first?.question || '待回答问题').slice(0, 200)
-    const body = questions
-      .map((q, i) => {
-        const opts = (q.options ?? []).map((o) => `  - ${o.label}${o.description ? `：${o.description}` : ''}`).join('\n')
-        return `${questions.length > 1 ? `问题 ${i + 1}：` : ''}${q.question}${opts ? `\n${opts}` : ''}`
+    const key = `${sessionId}\u0000${callId}`
+    const inflight = this.auqInflight.get(key)
+    if (inflight) return inflight
+    const task = (async () => {
+      const current = this.findAuqItem(sessionId, callId)
+      if (current) return current.id
+      const first = questions[0]
+      const title = (first?.header || first?.question || '待回答问题').slice(0, 200)
+      const body = questions
+        .map((q, i) => {
+          const opts = (q.options ?? []).map((o) => `  - ${o.label}${o.description ? `：${o.description}` : ''}`).join('\n')
+          return `${questions.length > 1 ? `问题 ${i + 1}：` : ''}${q.question}${opts ? `\n${opts}` : ''}`
+        })
+        .join('\n\n')
+        .slice(0, 4000)
+      const item = await this.addItem({
+        sessionId,
+        type: 'question',
+        title,
+        body,
+        source: 'auq',
+        auq: { callId, questions },
       })
-      .join('\n\n')
-      .slice(0, 4000)
-    const item = await this.addItem({
-      sessionId,
-      type: 'question',
-      title,
-      body,
-      source: 'auq',
-      auq: { callId, questions },
-    })
-    return item.id
+      return item.id
+    })()
+    this.auqInflight.set(key, task)
+    try {
+      return await task
+    } finally {
+      if (this.auqInflight.get(key) === task) this.auqInflight.delete(key)
+    }
   }
 
   /** 幂等终态：只有 pending 能迁移。 */
@@ -433,6 +758,181 @@ export class Hub {
     if (answerText !== undefined) item.answerText = answerText.slice(0, 4000)
     this.store.touch()
     return item
+  }
+
+  syncPendingItems(sessionId: string, projectId: string | null): void {
+    let changed = false
+    for (const item of this.store.data.items) {
+      if (item.sessionId === sessionId && item.status === 'pending' && item.projectId !== projectId) {
+        item.projectId = projectId
+        changed = true
+      }
+    }
+    if (changed) this.store.touch()
+  }
+
+  findAuqItem(sessionId: string, callId: string): HubItem | undefined {
+    return this.store.data.items.find((it) => it.source === 'auq' && it.sessionId === sessionId && it.auq?.callId === callId)
+  }
+
+  /**
+   * 刷新一个会话内 AUQ 条目能否由指挥中心代答。
+   * 只有会话投影里处于 continued 的问题可以；前台阻塞提问的应答权在会话卡片上。
+   */
+  syncAuqAnswerable(sessionId: string, continuedCallIds: ReadonlySet<string>): void {
+    let changed = false
+    for (const item of this.store.data.items) {
+      if (item.sessionId !== sessionId || item.source !== 'auq') continue
+      const answerable = continuedCallIds.has(item.auq?.callId ?? '')
+      if (item.auqAnswerable !== answerable) {
+        item.auqAnswerable = answerable
+        changed = true
+      }
+    }
+    if (changed) this.store.touch()
+  }
+
+  /**
+   * 按会话事件镜像 ask_user_question。
+   * 与 user-questions 投影不同，这里不依赖 tool/call 是否属于 timed 工具，
+   * 因此 legacy 阻塞式提问同样进入收件箱。
+   */
+  async mirrorAskUserQuestion(sessionId: string, event: any): Promise<void> {
+    const type = event?.type
+    if (type === 'tool/call') {
+      if (event.data?.name !== 'ask_user_question') return
+      const questions = questionsOfArguments(event.data.arguments)
+      if (!questions) return
+      await this.upsertAuqItem(sessionId, String(event.data.callId), questions)
+      return
+    }
+    if (type === 'tool/ptc-dispatch') {
+      if (event.data?.name !== 'ask_user_question' || event.data.isError) return
+      if (!resultIsPending(event.data.content)) return
+      const questions = questionsOfArguments(JSON.stringify(event.data.arguments))
+      if (questions) await this.upsertAuqItem(sessionId, String(event.data.subCallId), questions)
+      return
+    }
+    if (type === 'tool/result') {
+      const callId = String(event.data?.message?.toolCallId ?? '')
+      const item = callId ? this.findAuqItem(sessionId, callId) : undefined
+      if (!item || item.status !== 'pending') return
+      const content = event.data?.message?.content
+      // 时间到但用户仍可回答：保持待处理
+      if (resultIsPending(content)) return
+      const answers = answersOfContent(content)
+      if (answers && answers.length > 0) this.settleItem(item.id, 'answered', summarizeAnswers(answers) || '（已在会话内回答）')
+      else this.settleItem(item.id, 'dismissed', '问题在会话侧关闭')
+      return
+    }
+    if (type === 'user/message') {
+      const source = event.data?.source
+      if (source?.kind !== 'user-question-reply' || !source.callId) return
+      const item = this.findAuqItem(sessionId, String(source.callId))
+      if (!item || item.status !== 'pending') return
+      const answers = answersOfContent(event.data?.content) ?? []
+      this.settleItem(item.id, 'answered', summarizeAnswers(answers) || '（已在会话内回答）')
+    }
+  }
+
+  // ── 中断告警 ─────────────────────────────────────────────────────────────
+
+  /** 是否已有该会话该轮的告警条目（去重键丢失时的兜底）。 */
+  private hasAlertItem(sessionId: string, turn: number): boolean {
+    return this.store.data.items.some(
+      (it) => it.type === 'alert' && it.sessionId === sessionId && it.alert?.turn === turn,
+    )
+  }
+
+  /**
+   * 写入中断告警条目。同一会话同一轮只建一条，跨实时/回填/重启都不重复。
+   * 若会话在告警落库前已开新一轮，条目直接置为已回答，只保留历史。
+   */
+  async recordTurnAlerts(sessionId: string, candidates: readonly TurnAlertCandidate[]): Promise<HubItem[]> {
+    const alertKeys = (this.store.data.alertKeys ??= {})
+    const created: HubItem[] = []
+    for (const candidate of candidates) {
+      const key = alertKeyOf(sessionId, candidate.turn)
+      if (alertKeys[key]) continue
+      if (this.hasAlertItem(sessionId, candidate.turn)) {
+        alertKeys[key] = 'existing'
+        continue
+      }
+      // 先占位，避免并发实时事件与回填重复建条
+      alertKeys[key] = 'pending'
+      const alert: TurnAlertView = {
+        turn: candidate.turn,
+        kind: candidate.kind,
+        ...(candidate.cause ? { cause: candidate.cause } : {}),
+        ...(candidate.code ? { code: candidate.code } : {}),
+        ...(candidate.detail ? { detail: candidate.detail.slice(0, 500) } : {}),
+      }
+      let item: HubItem
+      try {
+        item = await this.addItem({
+          sessionId,
+          type: 'alert',
+          title: alertTitle(candidate),
+          body: alertBody(candidate),
+          source: 'system',
+          alert,
+        })
+      } catch (error) {
+        // 建条失败就撤掉占位，下一轮还能重试
+        delete alertKeys[key]
+        throw error
+      }
+      alertKeys[key] = item.id
+      const resumedAt = this.resumeMarks.get(sessionId) ?? 0
+      if (resumedAt > candidate.time) this.settleItem(item.id, 'answered', '会话已恢复运行')
+      created.push(item)
+    }
+    this.store.touch()
+    return created
+  }
+
+  /**
+   * 会话开新一轮（或用户已在会话内继续）时收掉待处理告警。
+   * 返回结算的条目数；同时记录恢复时刻供 recordTurnAlerts 判竞态。
+   */
+  settleAlertsForSession(sessionId: string, answerText = '会话已恢复运行'): number {
+    this.resumeMarks.set(sessionId, Date.now())
+    let settled = 0
+    for (const item of this.store.data.items) {
+      if (item.type === 'alert' && item.sessionId === sessionId && item.status === 'pending') {
+        this.settleItem(item.id, 'answered', answerText)
+        settled += 1
+      }
+    }
+    return settled
+  }
+
+  /** 冷读回填是否需要扫描该会话：可见时间窗内且日志在上次扫描后更新过。 */
+  shouldScanSession(sessionId: string, updatedAt: number, minUpdatedAt: number): boolean {
+    if (!(updatedAt >= minUpdatedAt)) return false
+    const scanned = this.store.data.alertScans?.[sessionId]
+    return !(scanned && scanned.updatedAt >= updatedAt)
+  }
+
+  /** 记下扫描游标：同一 updatedAt 的会话不重复冷读。 */
+  markSessionScanned(sessionId: string, updatedAt: number): void {
+    const scans = (this.store.data.alertScans ??= {})
+    scans[sessionId] = { at: Date.now(), updatedAt }
+    this.store.touch()
+  }
+
+  /** 丢弃不可见会话的扫描游标，控制存储体积。 */
+  pruneScanCursors(keep: ReadonlySet<string>): void {
+    const scans = this.store.data.alertScans
+    if (!scans) return
+    let changed = false
+    for (const id of Object.keys(scans)) {
+      if (!keep.has(id)) {
+        delete scans[id]
+        changed = true
+      }
+    }
+    if (changed) this.store.touch()
   }
 
   moveItem(id: string, projectId: string | null): HubItem | undefined {
@@ -482,47 +982,46 @@ export class Hub {
     }, new AbortController().signal)
   }
 
-  /** 快捷回复：AUQ 问题优先走结构化应答，失败退化为普通消息投递。 */
+  /** 不可代答时的统一提示：前台阻塞提问只能在前台会话的卡片上回答。 */
+  private assertAuqAnswerable(item: HubItem): void {
+    if (item.auqAnswerable !== true) throw new Error(AUQ_SESSION_ONLY)
+  }
+
+  /**
+   * 快捷回复：AUQ 条目只在可代答时走结构化应答。
+   * 前台阻塞提问不投递 queue 消息，也不结算条目，避免出现"已答复但会话未解锁"。
+   */
   async reply(itemId: string, text: string): Promise<{ via: 'answer' | 'prompt' }> {
     const item = this.store.data.items.find((it) => it.id === itemId)
     if (!item) throw new Error('消息不存在')
     if (item.status !== 'pending') throw new Error('消息已处理')
     if (item.source === 'auq') {
+      this.assertAuqAnswerable(item)
       const questions = item.auq?.questions ?? []
       const answers = questions.map((q) => ({ id: q.id, selected: [] as string[], custom: text }))
-      if (await this.tryAnswerAuq(item, answers)) {
-        this.settleItem(itemId, 'answered', text)
-        return { via: 'answer' }
-      }
+      if (!(await this.tryAnswerAuq(item, answers))) throw new Error(AUQ_ANSWER_FAILED)
+      this.settleItem(itemId, 'answered', text)
+      return { via: 'answer' }
     }
     await this.promptSession(item.sessionId, text)
     this.settleItem(itemId, 'answered', text)
     return { via: 'prompt' }
   }
 
-  /** AUQ 选项应答：每个问题给出 selected 标签或 custom 文本。 */
+  /** AUQ 选项应答：仅在可代答时提交结构化答案；否则报错并保持待处理。 */
   async answerStructured(itemId: string, answers: { id: string; selected: string[]; custom?: string }[]): Promise<{ via: 'answer' | 'prompt' }> {
     const item = this.store.data.items.find((it) => it.id === itemId)
     if (!item) throw new Error('消息不存在')
     if (item.status !== 'pending') throw new Error('消息已处理')
     if (item.source !== 'auq' || !item.auq) throw new Error('该消息不支持选项应答')
-    if (await this.tryAnswerAuq(item, answers)) {
-      const summary = answers
-        .map((a) => [...a.selected, ...(a.custom ? [a.custom] : [])].join('、'))
-        .filter(Boolean)
-        .join('；')
-      this.settleItem(itemId, 'answered', summary)
-      return { via: 'answer' }
-    }
-    // 退化：把选项结果拼成文本投递
-    const lines = answers.map((a) => {
-      const q = item.auq!.questions.find((qq) => qq.id === a.id)
-      const picked = [...a.selected, ...(a.custom ? [a.custom] : [])].join('、')
-      return q ? `${q.question}\n→ ${picked}` : picked
-    })
-    await this.promptSession(item.sessionId, lines.join('\n\n'))
-    this.settleItem(itemId, 'answered', lines.join('；'))
-    return { via: 'prompt' }
+    this.assertAuqAnswerable(item)
+    if (!(await this.tryAnswerAuq(item, answers))) throw new Error(AUQ_ANSWER_FAILED)
+    const summary = answers
+      .map((a) => [...a.selected, ...(a.custom ? [a.custom] : [])].join('、'))
+      .filter(Boolean)
+      .join('；')
+    this.settleItem(itemId, 'answered', summary)
+    return { via: 'answer' }
   }
 
   /** 会话被处置/移除时，把它的 pending AUQ 镜像标为已关闭，避免永远悬挂。 */

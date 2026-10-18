@@ -34,7 +34,7 @@
     "build": "bash scripts/build.sh",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "build:client": "tsdown",
-    "test": "node --test scripts/client-home.test.mjs",
+    "test": "node --test scripts/client-home.test.mjs scripts/auq-mirror.test.mjs scripts/turn-alert.test.mjs",
     "test:package": "node --test scripts/package.test.mjs",
     "check:release": "npm run build && npm run build:client && npm test && npm run test:package"
   },

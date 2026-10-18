@@ -24,7 +24,7 @@ const projects = [
 ]
 const empty = { now, pending: 0, projects, unassignedSessions: [], unassignedCounts: counts, trashedSessions: [], items: [] }
 const items = [1, 2, 3, 4].map((n) => ({ id: `item-${n}`, sessionId: 'session-1', sessionTitle: sessions[0].title, sessionVisible: true, sessionRunning: false, projectId: 'p', title: n === 2 ? '紧急：确认下一步实验范围' : `待处理消息 ${n}`, body: '此处是消息正文，用于验证首页能够直接阅读和回复。'.repeat(n === 1 ? 15 : 2), priority: n === 2 ? 'urgent' : 'normal', type: n === 3 ? 'deliverable' : 'question', status: 'pending', source: 'tool', createdAt: now - n * 10000 }))
-items[3] = { ...items[3], source: 'auq', auq: { callId: 'test-call', questions: [{ id: 'decision', question: '选择验证方式', options: [{ label: '先小规模验证' }, { label: '完整回归' }] }] } }
+items[3] = { ...items[3], source: 'auq', answerable: true, auq: { callId: 'test-call', questions: [{ id: 'decision', question: '选择验证方式', options: [{ label: '先小规模验证' }, { label: '完整回归' }] }] } }
 const populated = { ...empty, pending: 4, items, projects: [{ ...projects[0], counts: { questions: 3, deliverables: 1, urgent: 1 } }, ...projects.slice(1)] }
 const themes = {
   light: { '--dsw-alias-bg-base': '#f7f8fb', '--dsw-alias-bg-layer-1': '#fff', '--dsw-alias-bg-layer-2': '#f2f4f8', '--dsw-alias-label-primary': '#202532', '--dsw-alias-label-secondary': '#596273', '--dsw-alias-brand-primary': '#4169bf', '--dsw-alias-state-success-primary': '#287a50', '--dsw-alias-state-warn-primary': '#936016', '--dsw-alias-state-error-primary': '#b63949', '--dsw-alias-border-l1': '#dce0e8', '--dsw-alias-border-l2': '#b7c0ce' },

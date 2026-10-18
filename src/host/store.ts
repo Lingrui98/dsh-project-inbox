@@ -13,8 +13,30 @@ export interface Project {
   createdAt: number
 }
 
-export type ItemType = 'question' | 'deliverable'
+export type ItemType = 'question' | 'deliverable' | 'alert'
 export type ItemStatus = 'pending' | 'answered' | 'dismissed'
+/** 条目来源：agent 工具投递、ask_user_question 镜像、宿主中断告警。 */
+export type ItemSource = 'tool' | 'auq' | 'system'
+
+/**
+ * 中断告警原因，对应会话日志 `turn/end` 的 reason.kind。
+ * `error`：回合执行失败（模型调用、工具或环境错误，含传输中断）；`interrupted`：崩溃或重启后补记的中断；
+ * `max-tokens`：输出达到上限；`aborted`：宿主或上游主动取消，见 cause。
+ */
+export type TurnAlertKind = 'error' | 'interrupted' | 'max-tokens' | 'aborted'
+
+/** 收件箱里与会话中断相关的最小事实集，面板按它渲染原因。 */
+export interface TurnAlertView {
+  /** 中断的轮次号（会话内 `turn/start` 的 turn）。 */
+  turn: number
+  kind: TurnAlertKind
+  /** 取消原因，仅 aborted：user / parent / hook / disposed / legacy。 */
+  cause?: string
+  /** 模型失败码，仅 error，例如 PI_AI_ERROR。 */
+  code?: string
+  /** 一行原因说明（模型错误消息或人类可读描述）。 */
+  detail?: string
+}
 
 export interface AuqOptionView {
   label: string
@@ -39,11 +61,18 @@ export interface HubItem {
   body: string
   priority: 'normal' | 'urgent'
   status: ItemStatus
-  source: 'tool' | 'auq'
+  source: ItemSource
   createdAt: number
   settledAt?: number
   answerText?: string
   auq?: { callId: string; questions: AuqQuestionView[] }
+  /** 中断告警条目（type 为 alert、source 为 system）的原因事实。 */
+  alert?: TurnAlertView
+  /**
+   * AUQ 条目能否由指挥中心代答。
+   * 只有会话投影里处于 continued 的问题可以：前台阻塞提问的应答权在会话卡片上。
+   */
+  auqAnswerable?: boolean
 }
 
 export interface Binding {
@@ -62,6 +91,10 @@ export interface StoreData {
   titles?: Record<string, { title: string; at: number }>
   /** 回收站：sessionId → 扫入时间。回收站会话不进任何收件箱视图。 */
   trashed?: Record<string, number>
+  /** 中断告警去重键：`${sessionId}#${turn}` → 已建条目 id。跨重启保留，避免重复告警。 */
+  alertKeys?: Record<string, string>
+  /** 中断告警扫描游标：sessionId → 该会话已扫描到的 updatedAt，避免重复冷读日志。 */
+  alertScans?: Record<string, { at: number; updatedAt: number }>
 }
 
 export class HubStore {
@@ -78,6 +111,8 @@ export class HubStore {
       }
       if (!this.data.titles) this.data.titles = {}
       if (!this.data.trashed) this.data.trashed = {}
+      if (!this.data.alertKeys) this.data.alertKeys = {}
+      if (!this.data.alertScans) this.data.alertScans = {}
     } catch {
       /* 读取失败从空开始；原文件不覆盖，下次 flush 才替换 */
     }

@@ -13,20 +13,32 @@ import { join } from 'node:path'
 import { homedir } from 'node:os'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import z from '@deepseek-ai/schemastery'
-import { Hub, type HubServices } from './host/core.js'
+import { Hub, DEFAULT_ALERT_KINDS, foldTurnAlerts, foldOpenAuqQuestions, selectAlertCandidates, type HubServices } from './host/core.js'
 import { HubStore, type HubItem } from './host/store.js'
 
 export const name = '@dsh-external/dsh-research-hub'
-export const inject = ['tools', 'systemPrompt', 'webServer', 'sessionController', 'userQuestions', 'agents', 'sessionQuery', 'timer', 'workspaceController']
+export const inject = ['tools', 'systemPrompt', 'webServer', 'sessionController', 'userQuestions', 'agents', 'sessionQuery', 'sessionProjections', 'timer', 'workspaceController']
 
 export const Config = z.object({
   projectsRoot: z.string().default(process.env.DSH_RESEARCH_HUB_PROJECTS_ROOT || process.cwd()),
   storeFile: z.string().default(''),
+  /** 需要告警的 turn/end 原因标记，见 DEFAULT_ALERT_KINDS。 */
+  alertKinds: z.array(z.string()).default([...DEFAULT_ALERT_KINDS]),
+  /** 冷读回填只回看最近多少小时的会话日志。 */
+  alertBackfillHours: z.number().default(72),
+  /**
+   * 冷读观测的 interrupted 需要静默多少分钟才判定为真中断。
+   * 别的进程里正在运行的会话在冷读里同样是"末尾回合未闭合"。
+   */
+  alertInterruptedGraceMinutes: z.number().default(30),
 })
 
 interface ConfigShape {
   projectsRoot: string
   storeFile: string
+  alertKinds: string[]
+  alertBackfillHours: number
+  alertInterruptedGraceMinutes: number
 }
 
 type AppContext = Context & {
@@ -37,6 +49,7 @@ type AppContext = Context & {
   userQuestions: any
   agents: any
   sessionQuery: any
+  sessionProjections: any
   workspaceController: any
   setInterval(fn: () => void, ms: number): unknown
 }
@@ -103,8 +116,195 @@ interface SessionView {
 
 /** 实时归档集合：由 workspaceController.follow 长驻订阅维护（baseline + archived 增量都是全量帧）。 */
 const archivedLive = new Set<string>()
+const auqSyncAt = new Map<string, number>()
+let auqSyncRunning = false
+let visibleSessionIdsCache: { at: number; ids: Set<string> } | null = null
 
-async function buildPanel(hub: Hub, ctx: AppContext): Promise<unknown> {
+/** Rebuild durable AUQ mirrors from the session projection after reloads. */
+async function reconcileAuqMirrors(
+  hub: Hub,
+  ctx: AppContext,
+  sessions: { id: string; running: boolean; updatedAt: number }[],
+): Promise<void> {
+  if (auqSyncRunning || sessions.length === 0) return
+  const now = Date.now()
+  const stale = sessions.filter((s) => now - (auqSyncAt.get(s.id) ?? 0) > 30_000)
+  if (stale.length === 0) return
+  auqSyncRunning = true
+  try {
+    for (let i = 0; i < stale.length; i += 4) {
+      await Promise.all(stale.slice(i, i + 4).map(async (view) => {
+        const sessionId = view.id
+        try {
+          const observation = await ctx.sessionQuery.observeSession(sessionId, { projectionMode: 'all' })
+          try {
+            const projected = observation.projections?.values?.userQuestions
+            const active = Array.isArray(projected?.active) ? projected.active : []
+            const continuedCallIds = new Set<string>()
+            for (const question of active) {
+              if (question.state === 'continued') continuedCallIds.add(String(question.callId))
+              const questions = (question.questions ?? []).map((q: any) => ({
+                id: String(q.id), question: String(q.question ?? ''),
+                header: q.header ? String(q.header) : undefined,
+                options: Array.isArray(q.options) ? q.options.map((o: any) => ({ label: String(o.label ?? ''), description: o.description ? String(o.description) : undefined })) : undefined,
+                multiSelect: Boolean(q.multiSelect),
+              }))
+              if (questions.length > 0) await hub.upsertAuqItem(sessionId, String(question.callId), questions)
+            }
+            // 只有 continued 问题能由指挥中心代答；前台阻塞提问只读。
+            hub.syncAuqAnswerable(sessionId, continuedCallIds)
+            const settled = Array.isArray(projected?.settled) ? projected.settled : []
+            for (const question of settled) {
+              const item = hub.findAuqItem(sessionId, String(question.callId))
+              if (item?.status === 'pending') {
+                const summary = (question.answers ?? []).map((a: any) => [...(a.selected ?? []), ...(a.custom ? [a.custom] : [])].join('、')).filter(Boolean).join('；')
+                hub.settleItem(item.id, 'answered', summary || '（已在会话内回答）')
+              }
+            }
+            // 投影只跟踪 timed 工具；legacy 阻塞式提问改由事件折叠补齐。
+            // 折叠要读完整事件，因此只对可能正在等回答的会话执行。
+            const hasPending = hub.data.items.some(
+              (it) => it.sessionId === sessionId && it.status === 'pending' && it.source === 'auq',
+            )
+            if (view.running || (!hasPending && now - view.updatedAt <= 15 * 60_000)) {
+              for (const { callId, questions } of foldOpenAuqQuestions(observation.events ?? [])) {
+                await hub.upsertAuqItem(sessionId, callId, questions)
+              }
+            }
+          } finally {
+            const release = (observation as any)[Symbol.dispose] ?? (observation as any).dispose
+            release?.call(observation)
+          }
+        } catch {
+          // Cold sessions can disappear during a concurrent archive or cleanup.
+        } finally {
+          auqSyncAt.set(sessionId, Date.now())
+        }
+      }))
+    }
+  } finally {
+    auqSyncRunning = false
+  }
+}
+
+// ── 会话中断告警：冷读回填 ───────────────────────────────────────────────────
+//
+// 实时 turn/end 事件覆盖进程存活期间的失败；会话进程崩溃、宿主重启、插件重载
+// 期间发生的中断只在日志冷读时可见（session-query 会补记 interrupted 关闭事件），
+// 因此启动后与面板轮询时按会话 updatedAt 增量回填。
+
+/** 回填节流状态（模块级：热重载后重置一次，靠 alertScans 游标兜住重复扫描）。 */
+interface AlertBackfillState {
+  running: boolean
+  lastAt: number
+}
+
+interface NormalizedSession {
+  id: string
+  updatedAt: number
+  running: boolean
+  origin?: string
+  parentSessionId?: string
+  blank?: boolean
+}
+
+/** 归一会话列表项：sessionController.list 用 sessionId，面板用 id。 */
+function normalizeSession(raw: any): NormalizedSession | null {
+  const id = String(raw?.sessionId ?? raw?.id ?? '')
+  if (!id) return null
+  return {
+    id,
+    updatedAt: Number(raw?.updatedAt) || 0,
+    running: Boolean(raw?.running),
+    origin: raw?.origin ? String(raw.origin) : undefined,
+    parentSessionId: raw?.parentSessionId ? String(raw.parentSessionId) : undefined,
+    blank: Boolean(raw?.blank),
+  }
+}
+
+/** 告警范围：排除子代理、子会话、空白、回收站、归档会话。 */
+function alertEligible(session: NormalizedSession, trashed: ReadonlySet<string>): boolean {
+  if (session.origin === 'subagent' || session.parentSessionId) return false
+  if (session.blank) return false
+  return !trashed.has(session.id) && !archivedLive.has(session.id)
+}
+
+/** 冷读一个会话的日志，把窗口内的中断补进收件箱。 */
+async function scanSessionAlerts(
+  hub: Hub,
+  ctx: AppContext,
+  config: ConfigShape,
+  sessionId: string,
+  updatedAt: number,
+): Promise<void> {
+  const now = Date.now()
+  const windowMs = Math.max(1, config.alertBackfillHours || 72) * 3600_000
+  if (!hub.shouldScanSession(sessionId, updatedAt, now - windowMs)) return
+  let observation: any
+  try {
+    observation = await ctx.sessionQuery.observeSession(sessionId, { projectionMode: 'none' })
+    const selection = selectAlertCandidates(foldTurnAlerts(observation?.events ?? [], config.alertKinds), {
+      // live 观测的 interrupted 是持久化的补记事件（真中断）；冷读可能是合成事件
+      source: observation?.source === 'live' ? 'live' : 'prepared',
+      now,
+      windowMs,
+      interruptedGraceMs: Math.max(1, config.alertInterruptedGraceMinutes || 30) * 60_000,
+    })
+    if (selection.alerts.length > 0) await hub.recordTurnAlerts(sessionId, selection.alerts)
+    // 有候选被推迟时不推进游标：等它静默够久，下一轮回填再判定
+    if (!selection.deferred) hub.markSessionScanned(sessionId, updatedAt)
+  } catch {
+    /* 冷会话可能在并发归档或清理中消失；不推进游标，稍后重试 */
+  } finally {
+    try {
+      const release = observation?.[Symbol.dispose] ?? observation?.dispose
+      release?.call(observation)
+    } catch { /* 释放失败不影响结果 */ }
+  }
+}
+
+/** 增量回填：只扫描窗口内、上次扫描后更新的会话；3 路并发，面板构建与启动时触发。 */
+async function backfillTurnAlerts(
+  hub: Hub,
+  ctx: AppContext,
+  config: ConfigShape,
+  state: AlertBackfillState,
+  sessions: readonly any[],
+  force: boolean,
+): Promise<void> {
+  if (state.running) return
+  const now = Date.now()
+  if (!force && now - state.lastAt < 5 * 60_000) return
+  state.running = true
+  state.lastAt = now
+  try {
+    const trashed = new Set(Object.keys(hub.data.trashed ?? {}))
+    const windowMs = Math.max(1, config.alertBackfillHours || 72) * 3600_000
+    const eligible = sessions
+      .map(normalizeSession)
+      .filter((session): session is NormalizedSession => Boolean(session) && Boolean(session && alertEligible(session, trashed)))
+      .filter((session) => session.updatedAt >= now - windowMs)
+      .sort((a, b) => b.updatedAt - a.updatedAt)
+      .slice(0, 120)
+    let cursor = 0
+    const worker = async () => {
+      while (cursor < eligible.length) {
+        const session = eligible[cursor]
+        cursor += 1
+        await scanSessionAlerts(hub, ctx, config, session.id, session.updatedAt)
+      }
+    }
+    const width = Math.min(3, eligible.length)
+    if (width > 0) await Promise.all(Array.from({ length: width }, worker))
+    hub.pruneScanCursors(new Set(eligible.map((session) => session.id)))
+  } catch (error) {
+    ctx.logger?.warn?.('[research-hub] 中断告警回填失败', error)
+  } finally {
+    state.running = false
+  }
+}
+
+async function buildPanel(hub: Hub, ctx: AppContext, config: ConfigShape, alertState: AlertBackfillState): Promise<unknown> {
   // 项目发现走 60s 定时与 rescan，不在面板热路径上
   // 子 agent 会话不纳入（origin === 'subagent'）；其投递经 parentOf 归到父会话项目
   // 已归档会话不进入任何收件箱视图（会话列表与消息都不显示）
@@ -168,6 +368,7 @@ async function buildPanel(hub: Hub, ctx: AppContext): Promise<unknown> {
       if (projectId) {
         s.projectId = projectId
         hub.data.bindings[s.id] = { projectId, locked: false, by: 'auto', updatedAt: Date.now() }
+        hub.syncPendingItems(s.id, projectId)
       }
     }
   })
@@ -179,6 +380,11 @@ async function buildPanel(hub: Hub, ctx: AppContext): Promise<unknown> {
     if (s.projectId === null) s.suggested = hub.suggestFor(s.id, s.title)
   }
 
+  const visibleSessionIds = new Set(sessions.map((s) => s.id))
+  visibleSessionIdsCache = { at: Date.now(), ids: visibleSessionIds }
+  await reconcileAuqMirrors(hub, ctx, sessions.map((s) => ({ id: s.id, running: s.running, updatedAt: s.updatedAt })))
+  // 中断告警回填不阻塞面板：5 分钟节流，只扫窗口内更新过的会话
+  void backfillTurnAlerts(hub, ctx, config, alertState, sessions, false)
   const runningById = new Map(sessions.map((s) => [s.id, s.running]))
   const titleById = new Map(sessions.map((s) => [s.id, s.title]))
   const enrich = (it: HubItem) => ({
@@ -186,16 +392,19 @@ async function buildPanel(hub: Hub, ctx: AppContext): Promise<unknown> {
     sessionTitle: titleById.get(it.sessionId) || it.sessionTitle,
     sessionRunning: runningById.get(it.sessionId) ?? false,
     sessionVisible: runningById.has(it.sessionId),
+    // 面板用它决定是否显示应答控件：false 表示只能去会话内回答。
+    ...(it.source === 'auq' ? { answerable: it.auqAnswerable === true } : {}),
   })
 
   // 已归档/回收站会话的消息同样不进入任何收件箱视图（数据保留，恢复后回来）
   // 子代理产生的消息（无前缀 id 的会话）同样不进视图
-  const items = hub.sortedItems().filter((it) => !archived.has(it.sessionId) && !trashed.has(it.sessionId) && it.sessionId.startsWith('session-'))
+  const items = hub.sortedItems().filter((it) => visibleSessionIds.has(it.sessionId) && !archived.has(it.sessionId) && !trashed.has(it.sessionId))
   const countsOf = (projectId: string | null) => {
     const scoped = items.filter((it) => it.projectId === projectId && it.status === 'pending')
     return {
       questions: scoped.filter((it) => it.type === 'question').length,
       deliverables: scoped.filter((it) => it.type === 'deliverable').length,
+      alerts: scoped.filter((it) => it.type === 'alert').length,
       urgent: scoped.filter((it) => it.priority === 'urgent').length,
     }
   }
@@ -290,16 +499,108 @@ export function apply(ctx: AppContext, config: ConfigShape): void {
   // 周期性项目发现（新子项目自动出现）
   ctx.setInterval(() => hub.discoverProjects(), 60_000)
 
-  // ── Agent 工具 ──────────────────────────────────────────────────────────
+  // 中断告警回填的节流状态与启动回填：宿主重启/崩溃后，中断只在日志冷读里可见
+  const alertState: AlertBackfillState = { running: false, lastAt: 0 }
+  ctx.effect(() => {
+    const timer = setTimeout(() => {
+      void (async () => {
+        try {
+          await backfillTurnAlerts(hub, ctx, config, alertState, await hub.listSessionsCached(), true)
+        } catch (error) {
+          ctx.logger?.warn?.('[research-hub] 启动中断回填失败', error)
+        }
+      })()
+    }, 8_000)
+    return () => clearTimeout(timer)
+  }, 'research-hub: startup interruption backfill')
 
-  const projectListText = () =>
-    store.data.projects.map((p) => `${p.id}（${p.name}）`).join('、') || '（暂无项目）'
+  // 周期回填：没人打开面板时也要能补报被推迟的中断（推迟的扫描不推进游标）
+  ctx.setInterval(() => {
+    void (async () => {
+      try {
+        await backfillTurnAlerts(hub, ctx, config, alertState, await hub.listSessionsCached(), false)
+      } catch (error) {
+        ctx.logger?.warn?.('[research-hub] 周期中断回填失败', error)
+      }
+    })()
+  }, 5 * 60_000)
+
+  // 实时中断告警：turn/end 写入告警条目，turn/start 收掉该会话待处理告警
+  ctx.effect(() => {
+    const dispose = (ctx as any).on('session/event', async (session: any, event: any) => {
+      const sessionId = String(session?.id ?? '')
+      if (!sessionId) return
+      const header = session?.header ?? {}
+      // 子代理与子会话的中断由父会话承接，不进指挥中心
+      if (header.origin === 'subagent' || header.parentSession) return
+      try {
+        if (event?.type === 'turn/start') {
+          hub.settleAlertsForSession(sessionId)
+          return
+        }
+        if (event?.type !== 'turn/end') return
+        const candidates = foldTurnAlerts([event], config.alertKinds)
+        if (candidates.length > 0) await hub.recordTurnAlerts(sessionId, candidates)
+      } catch (error) {
+        ctx.logger?.warn?.('[research-hub] 中断告警写入失败', sessionId, error)
+      }
+    }, { global: true })
+    return typeof dispose === 'function' ? dispose : undefined
+  }, 'research-hub: turn interruption alerts')
+
+  const autoBinding = new Set<string>()
+  ctx.effect(() => {
+    const dispose = (ctx as any).on('session/event', async (session: any, event: any) => {
+      if (event?.type !== 'user/message' || event.data?.source?.kind !== 'user') return
+      if (session?.header?.origin === 'subagent') return
+      const sessionId = String(session?.id ?? '')
+      if (!sessionId || isSubagentCaller(ctx, sessionId) || autoBinding.has(sessionId)) return
+      const existing = store.data.bindings[sessionId]
+      if (existing && (existing.locked || existing.by !== 'auto')) return
+      autoBinding.add(sessionId)
+      try {
+        const inferred = await hub.inferSession(sessionId)
+        if (!inferred) return
+        const project = store.data.projects.find((p) => p.id === inferred)
+        if (!project) return
+        const current = store.data.bindings[sessionId]
+        if (current && (current.locked || current.by !== 'auto')) return
+        store.data.bindings[sessionId] = { projectId: project.id, locked: false, by: 'auto', updatedAt: Date.now() }
+        hub.syncPendingItems(sessionId, project.id)
+        store.touch()
+      } catch (error) {
+        ctx.logger?.warn?.('[research-hub] 自动归属失败', sessionId, error)
+      } finally {
+        autoBinding.delete(sessionId)
+      }
+    })
+    return typeof dispose === 'function' ? dispose : undefined
+  }, 'research-hub: auto-bind main sessions')
+
+  // ask_user_question 的实时镜像走会话事件，不依赖 user-questions 瀑布的 wait 字段。
+  // legacy 阻塞式提问的瀑布请求不带 callId，只有会话日志能提供 callId 与问题批。
+  ctx.effect(() => {
+    const dispose = (ctx as any).on('session/event', async (session: any, event: any) => {
+      if (!event) return
+      if (session?.header?.origin === 'subagent') return
+      const sessionId = String(session?.id ?? '')
+      if (!sessionId) return
+      try {
+        await hub.mirrorAskUserQuestion(sessionId, event)
+      } catch (error) {
+        ctx.logger?.warn?.('[research-hub] 提问镜像失败', sessionId, error)
+      }
+    }, { global: true })
+    return typeof dispose === 'function' ? dispose : undefined
+  }, 'research-hub: mirror ask_user_question events')
+
+  // ── Agent 工具 ──────────────────────────────────────────────────────────
 
   ctx.effect(() => ctx.tools.register({
     name: 'hub_register',
     description:
-      '向跨会话指挥中心声明本会话所属的研究项目。开始工作时调用一次即可。' +
-      'project 传项目 id、名称或别名；不确定时传 "auto"，由指挥中心按会话内容推断。',
+      '仅在自动归属错误或需要手动指定项目时调用。' +
+      'project 传项目 id、名称或别名；传 "auto" 可重新按会话内容推断。',
     parameters: {
       type: 'object',
       properties: {
@@ -349,7 +650,7 @@ export function apply(ctx: AppContext, config: ConfigShape): void {
     description:
       '向跨会话指挥中心投递一条消息，按项目归入收件箱。' +
       'type="question"：需要人类决策或回答、但不阻塞你继续工作的问题（紧急结构化问题请直接用 ask_user_question，会被自动镜像，不要重复投递）；' +
-      'type="deliverable"：交付结果，如实验结论、分析结果、报告或产物路径。' +
+      'type="deliverable"：已形成且可复用的结论、报告或产物；普通进度不投递。' +
       '人类的回复会以普通用户消息回到本会话。',
     parameters: {
       type: 'object',
@@ -403,24 +704,19 @@ export function apply(ctx: AppContext, config: ConfigShape): void {
     text: () => [
       '## 跨会话指挥中心（research-hub）',
       '',
-      '本环境装有指挥中心插件，把多个会话的待办消息汇聚到统一收件箱。规则：',
-      `1. 开始工作时调用一次 hub_register 声明本会话所属的研究项目。当前已知项目：${projectListText()}。不确定时传 "auto"。`,
-      '2. 需要人类决策或回答、但不必打断当前流程的问题，调用 hub_post(type="question") 投递，然后继续工作。',
-      '3. 产出可交付结果（实验结论、分析结果、报告、产物路径）时，调用 hub_post(type="deliverable") 交付。',
-      '4. 紧急且需要立即回答的结构化问题仍用 ask_user_question；它会被自动镜像到指挥中心，不要再用 hub_post 重复投递。',
-      '5. 人类的回复以普通用户消息进入本会话，按正常输入处理即可。',
-      '6. 子代理（subagent）会话不属于指挥中心范围：被委派执行的子会话禁止调用 hub_register / hub_post，结果直接汇报给父会话。',
+      '需要用户决策但不阻塞工作的事项，主动调用 hub_post(type="question")。',
+      '形成可复用的结论、报告或产物时，主动调用 hub_post(type="deliverable")；普通进度不投递。',
     ].join('\n'),
   }), 'research-hub: prompt section')
 
   // ── ask_user_question 被动镜像 ───────────────────────────────────────────
 
-  ;(ctx as any).on('user-questions/request', async (request: any, next: any) => {
-    const agent = request?.agent
-    const callId = request?.wait?.callId
-    if (!agent || !callId || !Array.isArray(request.questions)) return next()
-    let itemId: string | null = null
-    try {
+  ctx.effect(() => {
+    const dispose = (ctx as any).on('user-questions/request', async (request: any, next: any) => {
+      const agent = request?.agent
+      const callId = request?.wait?.callId
+      if (!agent || !callId || !Array.isArray(request.questions)) return next()
+      const sessionId = String(agent.id)
       const questions = request.questions.map((q: any) => ({
         id: String(q.id),
         question: String(q.question ?? ''),
@@ -430,29 +726,33 @@ export function apply(ctx: AppContext, config: ConfigShape): void {
           : undefined,
         multiSelect: Boolean(q.multiSelect),
       }))
-      // 镜像有 5s 兜底：指挥中心自身的存储/查询异常绝不能阻塞用户的提问
-      itemId = await Promise.race([
-        hub.upsertAuqItem(String(agent.id), String(callId), questions),
-        new Promise<null>((resolve) => setTimeout(() => resolve(null), 5000)),
-      ])
-    } catch {
-      /* 镜像失败不影响提问本身 */
-    }
-    try {
-      const answer = await next()
-      if (itemId) {
-        const summary = (answer?.answers ?? [])
-          .map((a: any) => [...(a.selected ?? []), ...(a.custom ? [a.custom] : [])].join('、'))
-          .filter(Boolean)
-          .join('；')
-        hub.settleItem(itemId, 'answered', summary || '（已在会话内回答）')
+      // 镜像写入最多等待 5 秒，但超时不丢弃后台任务。完成后仍可由回填逻辑发现。
+      const mirror = hub.upsertAuqItem(sessionId, String(callId), questions).catch(() => null)
+      let itemId: string | null = null
+      try {
+        itemId = await Promise.race([mirror, new Promise<null>((resolve) => setTimeout(() => resolve(null), 5000))])
+      } catch {
+        /* 镜像失败不影响提问本身 */
       }
-      return answer
-    } catch (error) {
-      if (itemId) hub.settleItem(itemId, 'dismissed', '问题在会话侧关闭')
-      throw error
-    }
-  })
+      try {
+        const answer = await next()
+        const finalId = itemId ?? await hub.upsertAuqItem(sessionId, String(callId), questions).catch(() => null)
+        if (finalId) {
+          const summary = (answer?.answers ?? [])
+            .map((a: any) => [...(a.selected ?? []), ...(a.custom ? [a.custom] : [])].join('、'))
+            .filter(Boolean)
+            .join('；')
+          hub.settleItem(finalId, 'answered', summary || '（已在会话内回答）')
+        }
+        return answer
+      } catch (error) {
+        const finalId = itemId ?? await hub.upsertAuqItem(sessionId, String(callId), questions).catch(() => null)
+        if (finalId) hub.settleItem(finalId, 'dismissed', '问题在会话侧关闭')
+        throw error
+      }
+    })
+    return typeof dispose === 'function' ? dispose : undefined
+  }, 'research-hub: mirror user questions')
 
   // 注意：不做 agent/disposed 或 api-session/removed 的孤儿清理。
   // DSH 的提问是可续答的（continued question 记录在会话日志里），Agent 空闲回收
@@ -463,16 +763,18 @@ export function apply(ctx: AppContext, config: ConfigShape): void {
 
   const api: Record<string, (payload: any) => Promise<unknown> | unknown> = {
     async panel() {
-      return buildPanel(hub, ctx)
+      return buildPanel(hub, ctx, config, alertState)
     },
     /** 轻量角标数据：只读内存 store，不触发归因与标题读取。 */
     badge() {
       const archived = archivedLive
       const trashedIds = store.data.trashed ?? {}
-      const pending = store.data.items.filter((it) => it.status === 'pending' && !archived.has(it.sessionId) && !trashedIds[it.sessionId] && it.sessionId.startsWith('session-'))
+      const visible = visibleSessionIdsCache?.ids
+      const pending = store.data.items.filter((it) => it.status === 'pending' && (!visible || visible.has(it.sessionId)) && !archived.has(it.sessionId) && !trashedIds[it.sessionId])
       return {
         pending: pending.length,
         questions: pending.filter((it) => it.type === 'question').length,
+        alerts: pending.filter((it) => it.type === 'alert').length,
         urgent: pending.filter((it) => it.priority === 'urgent').length,
       }
     },
@@ -567,7 +869,9 @@ export function apply(ctx: AppContext, config: ConfigShape): void {
     async rescan() {
       hub.invalidateCaches()
       hub.discoverProjects()
-      return buildPanel(hub, ctx)
+      // 手动重新扫描视为显式请求：强制补一次中断告警
+      void backfillTurnAlerts(hub, ctx, config, alertState, await hub.listSessionsCached(), true)
+      return buildPanel(hub, ctx, config, alertState)
     },
   }
 

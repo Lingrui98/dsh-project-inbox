@@ -15,7 +15,7 @@ function harness() {
     useReducer: (_reducer, initial) => [initial, () => {}],
   }
   const source = readFileSync(new URL('../src/client/index.ts', import.meta.url), 'utf8')
-    + '\nexport const __test = { SessionPreview, HomeInbox, ProjectCard, HubPage, HubReturnBar, setReturnTarget };\n'
+    + '\nexport const __test = { ItemCard, SessionPreview, HomeInbox, ProjectCard, HubPage, HubReturnBar, setReturnTarget };\n'
   const { outputText } = ts.transpileModule(source, {
     compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2023, esModuleInterop: true },
   })
@@ -49,6 +49,24 @@ function data(extra = {}) {
   return { now: 10000, pending: 0, projects: [], unassignedSessions: [], unassignedCounts: { questions: 0, deliverables: 0, urgent: 0 }, trashedSessions: [], items: [], ...extra }
 }
 const noop = () => {}
+
+// 首页/详情页的视图是模块级状态：前序用例可能把它留在详情页，先用头部「返回」回到首页。
+function homePage(ui, extra = {}) {
+  const first = ui.page(data(extra)).page
+  const back = nodes(first).find((node) => node.type === 'button' && node.props.key === 'back')
+  return back ? ui.page(data(extra)).page : first
+}
+
+function alertItem(extra = {}) {
+  return item('alert-1', {
+    type: 'alert', source: 'system',
+    sessionId: 's1', sessionTitle: '会话 1', projectId: 'p',
+    title: '会话中断：模型调用失败',
+    body: '第 3 轮模型调用失败（PI_AI_ERROR）：连接被重置。',
+    alert: { turn: 3, kind: 'error', code: 'PI_AI_ERROR', detail: '连接被重置' },
+    ...extra,
+  })
+}
 
 test('return button uses the displayed header session, never recency of retained sessions', () => {
   const ui = harness()
@@ -182,4 +200,48 @@ test('home uses session-bearing project cards but not inbox or trash project car
   const trash = nodes(page).find((n) => n.type === 'button' && text(n).includes('回收站'))
   trash.props.onClick()
   assert.deepEqual(changes, ['__all__', '__trash__'])
+})
+
+test('pending alert card renders interruption copy and a reply box instead of acknowledge', () => {
+  const ui = harness()
+  const card = ui.ItemCard({ item: alertItem(), now: 10000, onChanged: noop, onJump: noop })
+  assert.match(text(card), /会话中断：模型调用失败/)
+  assert.match(text(card), /待处理/)
+  // 「会话中断」pill 由 source === 'system' 触发，不是标题文本碰巧命中。
+  const pills = nodes(card).filter((node) => node.type === 'span' && children(node).includes('会话中断'))
+  assert.equal(pills.length, 1)
+  const area = nodes(card).find((node) => node.type === 'textarea')
+  assert.ok(area)
+  assert.match(area.props.placeholder, /继续该会话/)
+  const buttons = nodes(card).filter((node) => node.type === 'button').map((node) => text(node))
+  assert.ok(buttons.includes('回复'))
+  assert.ok(buttons.includes('跳转会话'))
+  assert.ok(buttons.includes('忽略'))
+  assert.equal(buttons.includes('查收'), false)
+})
+
+test('home inbox counts interruption alerts', () => {
+  const ui = harness()
+  const inbox = ui.HomeInbox({
+    items: [alertItem()], projects: [], now: 10000,
+    counts: { questions: 0, deliverables: 0, urgent: 0, alerts: 1 }, onOpen: noop,
+  })
+  assert.match(text(inbox), /1 中断/)
+  assert.match(text(inbox), /会话中断/)
+})
+
+test('all-pending view puts interruption alerts before questions and deliveries', () => {
+  const ui = harness()
+  const question = item('q-1', { sessionId: 's2', sessionTitle: '会话 2' })
+  const delivery = item('d-1', { type: 'deliverable', sessionId: 's3', sessionTitle: '会话 3' })
+  const items = [alertItem(), question, delivery]
+  const home = homePage(ui, { items })
+  nodes(home).find((node) => node.type === ui.HomeInbox).props.onOpen()
+  const all = ui.page(data({ items })).page
+  const labels = nodes(all).filter((node) => node.type === 'h2').map((node) => text(children(node)[1]))
+  assert.deepEqual(labels, ['会话中断', '待回答问题', '待查看交付'])
+  const cards = nodes(all).filter((node) => typeof node.type === 'function' && node.type.name === 'ItemCard')
+  assert.deepEqual(cards.map((node) => node.props.item.id), ['alert-1', 'q-1', 'd-1'])
+  // 复原模块级视图，避免影响后续用例。
+  nodes(all).find((node) => node.type === 'button' && node.props.key === 'back').props.onClick()
 })

@@ -40,7 +40,7 @@ function setReturnTarget(v: { sessionId: string } | null): void {
 
 // ── 类型（与 host 侧面板载荷对齐） ────────────────────────────────────────────
 
-interface Counts { questions: number; deliverables: number; urgent: number }
+interface Counts { questions: number; deliverables: number; urgent: number; alerts: number }
 interface SessionView {
   id: string
   title: string
@@ -66,12 +66,12 @@ interface HubItemView {
   sessionTitle: string
   sessionRunning: boolean
   sessionVisible: boolean
-  type: 'question' | 'deliverable'
+  type: 'question' | 'deliverable' | 'alert'
   title: string
   body: string
   priority: 'normal' | 'urgent'
   status: 'pending' | 'answered' | 'dismissed'
-  source: 'tool' | 'auq'
+  source: 'tool' | 'auq' | 'system'
   createdAt: number
   settledAt?: number
   answerText?: string
@@ -79,6 +79,19 @@ interface HubItemView {
     callId: string
     questions: { id: string; question: string; header?: string; options?: { label: string; description?: string }[]; multiSelect?: boolean }[]
   }
+  /** 会话中断告警的原因事实；仅 type 为 alert 的条目存在（source 恒为 system）。 */
+  alert?: {
+    turn: number
+    /** 与 host 侧 turn/end 的 reason.kind 对齐。 */
+    kind: 'error' | 'interrupted' | 'max-tokens' | 'aborted'
+    /** 仅 aborted：user / parent / hook / disposed / legacy。 */
+    cause?: string
+    /** 仅 error：模型失败码，例如 PI_AI_ERROR。 */
+    code?: string
+    detail?: string
+  }
+  /** AUQ 条目能否在指挥中心代答；false 表示只能去会话内回答。 */
+  answerable?: boolean
 }
 interface PanelData {
   now: number
@@ -250,6 +263,11 @@ const ICON_PATHS: Record<string, React.ReactNode[]> = {
     h('path', { key: 'q', d: 'M9.6 9.2a2.5 2.5 0 0 1 4.9.6c0 1.6-1.7 2-2.3 3v.7', fill: 'none', stroke: 'currentColor', strokeWidth: 2, strokeLinecap: 'round' }),
     h('circle', { key: 'd', cx: 12, cy: 17, r: 1.1, fill: 'currentColor' }),
   ],
+  warning: [
+    h('path', { key: 't', d: 'M10.3 3.9a2 2 0 0 1 3.4 0l8 13.6a2 2 0 0 1-1.7 3H4a2 2 0 0 1-1.7-3l8-13.6z', fill: 'none', stroke: 'currentColor', strokeWidth: 2, strokeLinejoin: 'round' }),
+    h('path', { key: 'e', d: 'M12 9.4v4.4', fill: 'none', stroke: 'currentColor', strokeWidth: 2, strokeLinecap: 'round' }),
+    h('circle', { key: 'd', cx: 12, cy: 17, r: 1.1, fill: 'currentColor' }),
+  ],
   package: [
     h('path', { key: 'p', d: 'M12 2l8 4v12l-8 4-8-4V6l8-4zm0 2.2L6.6 7 12 9.8 17.4 7 12 4.2zM6.5 8.6V18l4.5 2.2v-9.4l-4.5-2.2zm11 0l-4.5 2.2v9.4l4.5-2.2V8.6z', fill: 'currentColor' }),
   ],
@@ -338,7 +356,16 @@ function ItemCard(props: { item: HubItemView; now: number; onChanged: () => void
 
   const pending = item.status === 'pending'
   const questions = item.auq?.questions ?? []
-  const withOptions = pending && item.source === 'auq' && questions.some((q) => (q.options?.length ?? 0) > 0)
+  // 前台阻塞提问只能在前台会话的卡片上回答；指挥中心只展示，不提供应答控件。
+  const sessionOnly = pending && item.source === 'auq' && item.answerable !== true
+  const withOptions = pending && !sessionOnly && item.source === 'auq' && questions.some((q) => (q.options?.length ?? 0) > 0)
+  const isAlert = item.type === 'alert'
+  // 中断告警的回复会继续该会话，所以标语和 placeholder 都与问题、交付区分。
+  const typeLabel = item.type === 'question'
+    ? pending ? '待回答' : '问题'
+    : isAlert
+      ? pending ? '待处理' : '中断'
+      : pending ? '待查收' : '交付'
 
   const run = async (fn: () => Promise<unknown>) => {
     setBusy(true)
@@ -361,8 +388,12 @@ function ItemCard(props: { item: HubItemView; now: number; onChanged: () => void
     })
   }
 
-  const submitOptions = () =>
-    run(async () => {
+  const canSubmitOptions = questions.every((q, i) => (selected[q.id]?.length ?? 0) > 0 || (i === 0 && text.trim() !== ''))
+  const canSubmitText = text.trim().length > 0
+
+  const submitOptions = () => {
+    if (busy || !canSubmitOptions) return
+    return run(async () => {
       const answers = questions.map((q, i) => ({
         id: q.id,
         selected: selected[q.id] ?? [],
@@ -370,23 +401,25 @@ function ItemCard(props: { item: HubItemView; now: number; onChanged: () => void
       }))
       await api('answerStructured', { itemId: item.id, answers })
     })
+  }
 
-  const submitText = () =>
-    run(async () => {
-      if (!text.trim()) throw new Error('请先填写回复内容')
+  const submitText = () => {
+    if (busy || !canSubmitText) return
+    return run(async () => {
       await api('reply', { itemId: item.id, text: text.trim() })
     })
+  }
 
-  const canSubmitOptions = questions.every((q, i) => (selected[q.id]?.length ?? 0) > 0 || (i === 0 && text.trim() !== ''))
-
-  const typeIcon = item.type === 'question' ? 'question' : 'package'
-  const typeColor = item.type === 'question' ? C.warn : C.ok
+  const typeIcon = item.type === 'question' ? 'question' : isAlert ? 'warning' : 'package'
+  const typeColor = item.type === 'question' ? C.warn : isAlert ? C.err : C.ok
   const children: React.ReactNode[] = [
     h('div', { key: 'type', style: { ...S.row, gap: 6, marginBottom: 9 } }, [
       h(Icon, { key: 'icon', name: typeIcon, size: 14, color: typeColor }),
-      h('span', { key: 'label', style: { fontSize: 11, fontWeight: 650, color: C.text2 } }, pending ? item.type === 'question' ? '待回答' : '待查收' : item.type === 'question' ? '问题' : '交付'),
+      h('span', { key: 'label', style: { fontSize: 11, fontWeight: 650, color: C.text2 } }, typeLabel),
       item.priority === 'urgent' && pending ? pill('紧急', C.err, 'urgent') : null,
       item.source === 'auq' && pending ? pill('会话提问', C.info, 'auq') : null,
+      item.source === 'system' ? pill('会话中断', C.err, 'system') : null,
+      sessionOnly ? pill('会话内回答', C.text3, 'sessiononly') : null,
       h('span', { key: 'age', style: { ...S.muted, marginLeft: 'auto', fontSize: 11 } }, ago(props.now, item.createdAt)),
     ]),
     h('div', { key: 'head', style: { fontWeight: 650, fontSize: 14, lineHeight: 1.65, color: C.text, overflowWrap: 'anywhere' } }, item.title),
@@ -401,13 +434,16 @@ function ItemCard(props: { item: HubItemView; now: number; onChanged: () => void
     children.push(
       h('div', {
         key: 'body',
+        id: `rh-body-${item.id}`,
         style: long && !expanded
           ? { ...S.body2, maxHeight: 58, overflow: 'hidden', position: 'relative' }
-          : S.body2,
+          : long && expanded
+            ? { ...S.body2, maxHeight: 'none', overflow: 'visible' }
+            : S.body2,
       }, item.body),
       long
         ? h('button', {
-          key: 'expand', type: 'button', 'aria-expanded': expanded,
+          key: 'expand', type: 'button', 'aria-expanded': expanded, 'aria-controls': `rh-body-${item.id}`,
           style: { fontSize: 11, color: C.text2, cursor: 'pointer', marginTop: 5, display: 'inline-block', border: 0, background: 'transparent', padding: '3px 0', textDecoration: 'underline', textUnderlineOffset: 3 },
           onClick: () => setExpanded(!expanded),
         }, expanded ? '收起' : `展开全部（${item.body.length} 字）`)
@@ -447,18 +483,37 @@ function ItemCard(props: { item: HubItemView; now: number; onChanged: () => void
     )
   }
 
-  if (pending) {
+  if (pending && sessionOnly) {
+    children.push(
+      h('div', { key: 'hint', style: S.body2 }, '该问题显示在前台会话的提问卡片上，需在会话内回答。回答后此处会自动关闭。'),
+      h('div', { key: 'actions', className: 'rh-message-actions', style: { ...S.row, marginTop: 8 } }, [
+        h('button', {
+          key: 'jump', style: { ...S.btnPrimary, opacity: busy ? 0.55 : 1 }, disabled: busy,
+          onClick: () => props.onJump(item.sessionId),
+          ...buttonHover(tint(C.brand, 18), tint(C.brand, 28), tint(C.brand, 45), tint(C.brand, 65)),
+        }, '去会话回答'),
+        h('button', {
+          key: 'dismiss', className: 'rh-subtle-action',
+          style: { ...S.btn, color: C.text3, opacity: busy ? 0.55 : 1, marginLeft: 'auto' }, disabled: busy,
+          onClick: () => run(() => api('dismiss', { itemId: item.id })),
+        }, '忽略'),
+        error ? h('span', { key: 'err', role: 'alert', style: { color: C.err, fontSize: 12 } }, error) : null,
+      ]),
+    )
+  } else if (pending) {
     children.push(
       h('textarea', {
         key: 'reply',
         style: S.textarea,
         'aria-label': `回复：${item.title}`,
-        placeholder: withOptions ? '补充说明（可选） · Ctrl/⌘ + Enter 提交' : '写下回复… · Ctrl/⌘ + Enter 发送',
+        placeholder: withOptions
+          ? '补充说明（可选） · Ctrl/⌘ + Enter 提交'
+          : isAlert ? '回复内容会继续该会话… · Ctrl/⌘ + Enter 发送' : '写下回复… · Ctrl/⌘ + Enter 发送',
         value: text,
         disabled: busy,
         onChange: (e: any) => setText(e.target.value),
         onKeyDown: (e: any) => {
-          if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+          if (!e.isComposing && e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
             e.preventDefault()
             if (withOptions) void submitOptions()
             else void submitText()
@@ -472,7 +527,7 @@ function ItemCard(props: { item: HubItemView; now: number; onChanged: () => void
              'aria-busy': busy, onClick: submitOptions,
              ...buttonHover(tint(C.brand, 18), tint(C.brand, 28), tint(C.brand, 45), tint(C.brand, 65)),
            }, busy ? '提交中…' : '提交选择')
-          : h('button', { key: 'send', style: { ...S.btnPrimary, opacity: busy ? 0.5 : 1 }, disabled: busy, onClick: submitText, ...buttonHover(tint(C.brand, 18), tint(C.brand, 28), tint(C.brand, 45), tint(C.brand, 65)) }, busy ? '发送中…' : '回复'),
+          : h('button', { key: 'send', style: { ...S.btnPrimary, opacity: busy || !canSubmitText ? 0.5 : 1 }, disabled: busy || !canSubmitText, onClick: submitText, ...buttonHover(tint(C.brand, 18), tint(C.brand, 28), tint(C.brand, 45), tint(C.brand, 65)) }, busy ? '发送中…' : '回复'),
         item.type === 'deliverable'
           ? h('button', {
              key: 'ack', style: { ...S.btn, color: C.text, background: tint(C.ok, 6), borderColor: tint(C.ok, 32), opacity: busy ? 0.55 : 1 }, disabled: busy,
@@ -488,7 +543,7 @@ function ItemCard(props: { item: HubItemView; now: number; onChanged: () => void
            key: 'dismiss', className: 'rh-subtle-action', style: { ...S.btn, color: C.text3, opacity: busy ? 0.55 : 1, marginLeft: 'auto' }, disabled: busy,
            onClick: () => run(() => api('dismiss', { itemId: item.id })),
          }, '忽略'),
-        error ? h('span', { key: 'err', style: { color: C.err, fontSize: 12 } }, error) : null,
+        error ? h('span', { key: 'err', role: 'alert', style: { color: C.err, fontSize: 12 } }, error) : null,
       ]),
     )
   } else {
@@ -651,7 +706,8 @@ function HomeInbox(props: {
   const total = props.total ?? pending.length
   const urgent = props.counts?.urgent ?? pending.filter((item) => item.priority === 'urgent').length
   const questions = props.counts?.questions ?? pending.filter((item) => item.type === 'question').length
-  const tone = urgent > 0 ? C.err : HUES[0]
+  const alerts = props.counts?.alerts ?? pending.filter((item) => item.type === 'alert').length
+  const tone = urgent > 0 || alerts > 0 ? C.err : HUES[0]
   return h('section', {
     'aria-label': '收件箱', className: 'rh-inbox',
     style: {
@@ -668,11 +724,12 @@ function HomeInbox(props: {
       h('div', { key: 'title', style: { flex: 1, minWidth: 150 } }, [
         h('div', { key: 'eyebrow', style: { color: C.text2, fontSize: 10, letterSpacing: '0.1em', fontWeight: 650, marginBottom: 3 } }, total > 0 ? '需要你的关注' : '一切就绪'),
         h('h2', { key: 'h', style: { margin: 0, fontSize: 21, fontWeight: 700, letterSpacing: '-0.03em', lineHeight: 1.4 } }, `收件箱 · ${total} 条待处理`),
-        h('div', { key: 'desc', style: { ...S.muted, marginTop: 5, fontSize: 11 } }, '集中回答问题、查收交付。仅查看不会关闭消息。'),
+        h('div', { key: 'desc', style: { ...S.muted, marginTop: 5, fontSize: 11 } }, '集中回答问题、查收交付、处理会话中断。仅查看不会关闭消息。'),
       ]),
       urgent > 0 ? pill(`${urgent} 紧急`, C.err, 'urgent') : null,
+      alerts > 0 ? pill(`${alerts} 中断`, C.err, 'alerts') : null,
       questions > 0 ? pill(`${questions} 待回答`, C.warn, 'questions') : null,
-      total - questions > 0 ? pill(`${total - questions} 待查收`, C.ok, 'deliverables') : null,
+      total - questions - alerts > 0 ? pill(`${total - questions - alerts} 待查收`, C.ok, 'deliverables') : null,
       h('button', {
         key: 'open', type: 'button', style: { ...S.btn, padding: '8px 13px', borderColor: tint(tone, 28), background: tint(tone, 7) }, onClick: props.onOpen, ...buttonHover(tint(tone, 7), tint(tone, 13), tint(tone, 28), tint(tone, 45)),
       }, total > 3 ? `查看全部 ${total} 条` : '打开收件箱'),
@@ -813,9 +870,10 @@ function ProjectCard(props: {
       }, props.name),
       h('span', { key: 'arrow', className: 'rh-project-arrow', 'aria-hidden': true, style: { color: C.text2, display: 'inline-flex' } }, h(Icon, { name: 'arrow', size: 15 })),
     ]),
-    counts.questions + counts.deliverables > 0
+    counts.questions + counts.deliverables + (counts.alerts ?? 0) > 0
       ? h('div', { key: 'counts', style: S.row }, [
         counts.urgent > 0 ? pill(`${counts.urgent} 紧急`, C.err, 'u') : null,
+        (counts.alerts ?? 0) > 0 ? pill(`${counts.alerts} 中断`, C.err, 'a') : null,
         counts.questions > 0 ? pill(`${counts.questions} 问`, C.warn, 'q') : null,
         counts.deliverables > 0 ? pill(`${counts.deliverables} 交付`, C.ok, 'd') : null,
       ])
@@ -827,7 +885,12 @@ function ProjectCard(props: {
           key: item.id, title: item.title,
           style: { display: 'flex', alignItems: 'center', gap: 6, minWidth: 0, color: C.text2, fontSize: 12, lineHeight: 1.5 },
         }, [
-          h(Icon, { key: 'icon', name: item.type === 'question' ? 'question' : 'package', size: 12, color: item.priority === 'urgent' ? C.err : item.type === 'question' ? C.warn : C.ok }),
+          h(Icon, {
+            key: 'icon',
+            name: item.type === 'question' ? 'question' : item.type === 'alert' ? 'warning' : 'package',
+            size: 12,
+            color: item.priority === 'urgent' || item.type === 'alert' ? C.err : item.type === 'question' ? C.warn : C.ok,
+          }),
           h('span', { key: 'title', style: { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, item.title),
         ])),
       )
@@ -849,6 +912,8 @@ function HubPage(props: { ctx: any }) {
   const [data, setData] = React.useState<PanelData | null>(null)
   const [selected, setSelectedRaw] = React.useState<string | null>(hubView) // null = 卡片首页；模块级记忆
   const [error, setError] = React.useState('')
+  const [initialError, setInitialError] = React.useState('')
+  const [syncError, setSyncError] = React.useState('')
   const [showHistory, setShowHistory] = React.useState(false)
   const [rescanning, setRescanning] = React.useState(false)
   const setSelected = (v: string | null) => {
@@ -861,9 +926,12 @@ function HubPage(props: { ctx: any }) {
     try {
       setData(await api<PanelData>('panel'))
       setLoadedAt(Date.now())
-      setError('')
+      setSyncError('')
+      setInitialError('')
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
+      const message = e instanceof Error ? e.message : String(e)
+      setSyncError(message)
+      setInitialError((current) => current || message)
     }
   }, [])
 
@@ -962,17 +1030,25 @@ function HubPage(props: { ctx: any }) {
   }, [props.ctx])
 
   if (!data) {
-    return h('div', { style: { ...S.root, alignItems: 'center', justifyContent: 'center' } },
-      h('span', { style: S.muted }, error || '正在加载指挥中心…'))
+    return h('div', { style: { ...S.root, alignItems: 'center', justifyContent: 'center', gap: 12, padding: 24 } }, [
+      h('span', { key: 'message', role: 'status', style: S.muted }, initialError || error || '正在加载指挥中心…'),
+      initialError
+        ? h('button', { key: 'retry', type: 'button', style: S.btn, onClick: () => void load(), ...buttonHover() }, '重试')
+        : null,
+    ])
   }
 
   const itemCard = (it: HubItemView) =>
     h(ItemCard, { key: it.id, item: it, now: data.now, onChanged: load, onJump: jump })
 
   const section = (title: string, list: HubItemView[], emptyText?: string) => {
-    const tone = title.includes('问题') ? C.warn : title.includes('交付') ? C.ok : title.includes('历史') ? C.text3 : C.brand
-    const icon = title.includes('问题') ? 'question' : title.includes('交付') ? 'package' : 'inbox'
-    return h('section', { key: title, style: { marginBottom: 22, minWidth: 0 } }, [
+    const tone = title.includes('问题') ? C.warn
+      : title.includes('交付') ? C.ok
+      : title.includes('中断') ? C.err
+      : title.includes('历史') ? C.text3
+      : C.brand
+    const icon = title.includes('问题') ? 'question' : title.includes('交付') ? 'package' : title.includes('中断') ? 'warning' : 'inbox'
+    return h('section', { key: title, className: 'rh-section', style: { marginBottom: 22, minWidth: 0 } }, [
       h('h2', { key: 't', className: 'rh-section-heading' }, [
         h('span', { key: 'icon', style: { padding: 6, borderRadius: 8, color: tone, background: tint(tone, 9), display: 'inline-flex' } }, h(Icon, { name: icon, size: 14 })),
         h('span', { key: 'label' }, title),
@@ -1018,15 +1094,15 @@ function HubPage(props: { ctx: any }) {
     ]),
     h('div', { key: 'actions', className: 'rh-toolbar-actions', style: { ...S.row, gap: 8 } }, [
       loadedAt > 0 ? h('span', {
-        key: 'upd', className: 'rh-toolbar-sync', style: { ...S.muted, fontSize: 10, marginRight: 5, display: 'inline-flex', alignItems: 'center', gap: 5 }, title: '每 8 秒自动刷新',
-      }, [h('span', { key: 'dot', style: { width: 5, height: 5, borderRadius: '50%', background: C.ok } }), `更新于 ${new Date(loadedAt).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}`]) : null,
+        key: 'upd', className: 'rh-toolbar-sync', style: { ...S.muted, fontSize: 10, marginRight: 5, display: 'inline-flex', alignItems: 'center', gap: 5, color: syncError ? C.err : C.text2 }, title: syncError ? '自动刷新失败，仍显示上次成功数据' : '每 8 秒自动刷新',
+      }, [h('span', { key: 'dot', style: { width: 5, height: 5, borderRadius: '50%', background: syncError ? C.err : C.ok } }), syncError ? '更新失败' : `更新于 ${new Date(loadedAt).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}`]) : null,
       h('button', {
         key: 'refresh', style: { ...S.btn, opacity: rescanning ? 0.6 : 1, display: 'inline-flex', alignItems: 'center', gap: 6 },
         disabled: rescanning, 'aria-busy': rescanning, ...buttonHover(),
         onClick: () => {
           setRescanning(true)
           void api('rescan')
-            .then((v) => { setData(v as PanelData); setLoadedAt(Date.now()) })
+            .then((v) => { setData(v as PanelData); setLoadedAt(Date.now()); setSyncError('') })
             .catch((e) => setError(e instanceof Error ? e.message : String(e)))
             .finally(() => setRescanning(false))
         },
@@ -1047,7 +1123,9 @@ function HubPage(props: { ctx: any }) {
   if (selected === null) {
     const cards: React.ReactNode[] = []
     const sorted = [...data.projects].sort(
-      (a, b) => (b.counts.questions + b.counts.deliverables + b.counts.urgent * 10) - (a.counts.questions + a.counts.deliverables + a.counts.urgent * 10) || a.name.localeCompare(b.name) || a.id.localeCompare(b.id),
+      (a, b) => (b.counts.questions + b.counts.deliverables + b.counts.urgent * 10 + (b.counts.alerts ?? 0) * 10)
+        - (a.counts.questions + a.counts.deliverables + a.counts.urgent * 10 + (a.counts.alerts ?? 0) * 10)
+        || a.name.localeCompare(b.name) || a.id.localeCompare(b.id),
     )
     for (const p of sorted) {
       cards.push(h(ProjectCard, {
@@ -1064,7 +1142,7 @@ function HubPage(props: { ctx: any }) {
         onJump: jump,
       }))
     }
-    if (data.unassignedSessions.length > 0 || data.unassignedCounts.questions + data.unassignedCounts.deliverables > 0) {
+    if (data.unassignedSessions.length > 0 || data.unassignedCounts.questions + data.unassignedCounts.deliverables + (data.unassignedCounts.alerts ?? 0) > 0) {
       cards.push(h(ProjectCard, {
         key: '__unassigned__',
         name: '未分配',
@@ -1083,7 +1161,12 @@ function HubPage(props: { ctx: any }) {
     body = h('div', { key: 'home', style: { width: '100%', maxWidth: 1600, margin: '0 auto' } }, [
       h(HomeInbox, {
         key: 'inbox', items: data.items, projects: data.projects, now: data.now, total: data.pending,
-        counts: data.projects.reduce((sum, p) => ({ questions: sum.questions + p.counts.questions, deliverables: sum.deliverables + p.counts.deliverables, urgent: sum.urgent + p.counts.urgent }), { ...data.unassignedCounts }),
+        counts: data.projects.reduce((sum, p) => ({
+          questions: sum.questions + p.counts.questions,
+          deliverables: sum.deliverables + p.counts.deliverables,
+          urgent: sum.urgent + p.counts.urgent,
+          alerts: (sum.alerts ?? 0) + (p.counts.alerts ?? 0),
+        }), { ...data.unassignedCounts }),
         onOpen: () => setSelected('__all__'), onChanged: load, onJump: jump,
       }),
       h('div', { key: 'projects-head', style: { ...S.row, marginBottom: 16, gap: 12 } }, [
@@ -1122,9 +1205,11 @@ function HubPage(props: { ctx: any }) {
         ),
     ])
   } else if (selected === '__all__') {
+    const pendingA = data.items.filter((it) => it.status === 'pending' && it.type === 'alert')
     const pendingQ = data.items.filter((it) => it.status === 'pending' && it.type === 'question')
     const pendingD = data.items.filter((it) => it.status === 'pending' && it.type === 'deliverable')
     body = h('div', { className: 'rh-inbox-grid' }, [
+      section('会话中断', pendingA, '没有会话中断'),
       section('待回答问题', pendingQ, '没有待回答的问题'),
       section('待查看交付', pendingD, '没有待查看的交付'),
     ])
@@ -1157,6 +1242,10 @@ function HubPage(props: { ctx: any }) {
     h('style', { key: 'styles' }, HUB_CSS),
     h('div', { key: 'content', className: 'rh-content', style: S.content }, [
       error ? h('div', { key: 'error', role: 'alert', style: { maxWidth: 1600, margin: '0 auto 18px', padding: '10px 14px', borderRadius: 10, color: C.err, background: tint(C.err, 8), border: `1px solid ${tint(C.err, 20)}` } }, error) : null,
+      syncError && data ? h('div', { key: 'sync-error', role: 'status', style: { maxWidth: 1600, margin: '0 auto 18px', padding: '9px 12px', borderRadius: 10, color: C.err, background: tint(C.err, 6), border: `1px solid ${tint(C.err, 18)}`, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' } }, [
+        h('span', { key: 'message', style: { flex: 1, minWidth: 180 } }, `自动更新失败，当前显示 ${loadedAt > 0 ? '上次成功数据' : '缓存数据'}：${syncError}`),
+        h('button', { key: 'retry', type: 'button', style: { ...S.btn, minHeight: 28, padding: '4px 9px', color: C.err, borderColor: tint(C.err, 30), background: tint(C.err, 5) }, onClick: () => void load(), ...buttonHover(tint(C.err, 5), tint(C.err, 12), tint(C.err, 30), tint(C.err, 48)) }, '重试'),
+      ]) : null,
       h('div', { key: 'canvas', style: { maxWidth: 1600, margin: '0 auto' } }, body),
     ]),
   ])
@@ -1165,12 +1254,12 @@ function HubPage(props: { ctx: any }) {
 // ── panellist 图标（含角标） ──────────────────────────────────────────────────
 
 function HubIcon() {
-  const [badge, setBadge] = React.useState<{ pending: number; urgent: number } | null>(null)
+  const [badge, setBadge] = React.useState<{ pending: number; urgent: number; alerts?: number } | null>(null)
   React.useEffect(() => {
     let alive = true
     const tick = async () => {
       try {
-        const v = await api<{ pending: number; urgent: number }>('badge')
+        const v = await api<{ pending: number; urgent: number; alerts?: number }>('badge')
         if (alive) setBadge(v)
       } catch { /* 轮询失败保持旧值 */ }
     }
@@ -1189,7 +1278,8 @@ function HubIcon() {
         key: 'b',
         style: {
           position: 'absolute', top: -6, right: -8, minWidth: 14, height: 14, borderRadius: 7,
-          background: `color-mix(in srgb, ${badge.urgent > 0 ? C.err : C.warn} 18%, transparent)`, color: badge.urgent > 0 ? C.err : C.warn,
+          background: `color-mix(in srgb, ${badge.urgent > 0 || (badge.alerts ?? 0) > 0 ? C.err : C.warn} 18%, transparent)`,
+          color: badge.urgent > 0 || (badge.alerts ?? 0) > 0 ? C.err : C.warn,
           fontSize: 9, fontWeight: 700, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '0 3px',
         },
       }, badge.pending > 99 ? '99+' : String(badge.pending))
