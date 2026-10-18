@@ -22,7 +22,7 @@ test('release tarball contains a complete, portable, loadable DSH bundle', async
   execFileSync('tar', ['-xzf', join(temp, pack.filename), '-C', temp])
   const dir = join(temp, 'package')
   const manifest = JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8'))
-  assert.equal(manifest.version, '0.1.1')
+  assert.equal(manifest.version, '0.1.2')
   assert.ok(existsSync(join(dir, manifest.dsh.bundle.patch)))
   assert.ok(existsSync(join(dir, manifest.exports['./client'])))
   for (const name of names.filter((name) => /\.(js|json|map|md|yml)$/.test(name))) {

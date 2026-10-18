@@ -1,6 +1,6 @@
 {
   "name": "@dsh-external/dsh-research-hub",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "DSH Research Hub: project-based session dashboard, persistent inbox, and inline replies",
   "private": true,
   "type": "module",
