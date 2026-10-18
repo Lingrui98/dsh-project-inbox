@@ -24,7 +24,16 @@ for (const name of names) {
   for (const require of requires) {
     try { target = dirname(require.resolve(`${name}/package.json`)); break } catch { /* Try the next installation. */ }
   }
-  if (!target) throw Error(`Cannot resolve ${name}. Install DSH, or set DSH_ROOT/DSH_CHECKOUT to its package root.`)
+  if (!target) {
+    // A DSH upgrade may remove a package that only typed declarations used
+    // (e.g. the retired client-ui-slots in 0.2.1-rc.2). The host tsc reports a
+    // hard error if a package it really imports is absent, so warn and move on.
+    console.warn(`Skip ${name}: not resolvable from this DSH installation`)
+    try {
+      if (lstatSync(dest).isSymbolicLink()) unlinkSync(dest)
+    } catch (error) { if (error.code !== 'ENOENT') throw error }
+    continue
+  }
   // Never recursively delete a computed directory. Only replace a broken symlink at this exact dependency path.
   if (!dest.startsWith(resolve(root, 'node_modules') + '/')) throw Error('Invalid dependency destination')
   try {
