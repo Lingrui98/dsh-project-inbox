@@ -3,9 +3,14 @@
  * 所有方法只操作内存 store + 宿主服务，落盘由 store.touch 防抖完成。
  */
 import { randomUUID } from 'node:crypto'
-import { existsSync, readdirSync, readFileSync } from 'node:fs'
-import { basename, join } from 'node:path'
-import type { AuqQuestionView, Binding, HubItem, HubStore, Project, SessionSnapshot, TurnAlertKind, TurnAlertView } from './store.js'
+import type { AuqQuestionView, Binding, HubItem, HubStore, KindAction, KindSpec, Project, SessionSnapshot, TurnAlertKind, TurnAlertView } from './store.js'
+import { DEFAULT_KINDS } from './store.js'
+import {
+  discoverProjects as scanProjectDirs,
+  resolveDiscoveryOptions,
+  type DiscoveryConfig,
+  type DiscoveryOptions,
+} from './discovery.js'
 
 /** 宿主服务的最小结构面（运行时已验证存在）。 */
 export interface HubServices {
@@ -15,34 +20,46 @@ export interface HubServices {
   agents: any
 }
 
-/** 归因时无区分度的通用词，不参与匹配。 */
-const STOP_TOKENS = new Set(['paper', 'papers', 'project', 'exp', 'doc', 'docs', 'the', 'and'])
-
 /** 归一化：小写、非中英数字折叠为空格。 */
 function norm(s: string): string {
   return s.toLowerCase().replace(/[^a-z0-9一-鿿]+/g, ' ').trim()
 }
 
-/** 建议路径的停用词比自动绑定宽：'papers' 在标题里是有区分度的线索，仅作建议展示。 */
-const SUGGEST_STOP_TOKENS = new Set(['paper', 'project', 'exp', 'doc', 'docs', 'the', 'and'])
-
 function uniq(list: string[]): string[] {
   return [...new Set(list.filter((s) => typeof s === 'string' && s.trim() !== '').map((s) => s.trim()))]
 }
 
-/** 从目录名派生别名：全名、去分隔符、逐 token（≥3 字符且非停用词）、token 前缀链。 */
-function deriveAliases(dirName: string, displayName: string): string[] {
-  const aliases = [dirName, displayName, dirName.replace(/[-_]+/g, '')]
-  const tokens = dirName.split(/[-_]+/).filter((t) => t.length >= 3 && !STOP_TOKENS.has(t.toLowerCase()))
-  aliases.push(...tokens)
-  for (let i = 2; i < tokens.length; i += 1) aliases.push(tokens.slice(0, i).join(' '))
-  return uniq(aliases)
+// ── 消息类型注册表（kinds） ─────────────────────────────────────────────────
+
+const KIND_ACTIONS: readonly string[] = ['answer', 'ack', 'inspect', 'read']
+
+function isKindAction(value: unknown): value is KindAction {
+  return typeof value === 'string' && KIND_ACTIONS.includes(value)
 }
 
-/** 从 paper.toml 文本里朴素提取第一个 name/title 字段。 */
-function paperTomlName(text: string): string | undefined {
-  const m = text.match(/^(?:name|title)\s*=\s*["']([^"']+)["']/m)
-  return m?.[1]
+/** 配置里的单个 kind 条目：label/action 均可缺省，缺省继承内置值或回落。 */
+export type KindsConfig = Record<string, { label?: unknown; action?: unknown; postable?: unknown } | null>
+
+/**
+ * 解析 kinds 注册表：内置三类为底，配置按键覆盖或新增。
+ * 自定义 kind 缺省 action 为 read；空 label 与未知 action 回落到该键的既有值。
+ */
+export function resolveKinds(config?: KindsConfig | Record<string, KindSpec> | null): Record<string, KindSpec> {
+  const resolved: Record<string, KindSpec> = Object.fromEntries(
+    Object.entries(DEFAULT_KINDS).map(([key, spec]) => [key, { ...spec }]),
+  )
+  for (const [key, value] of Object.entries(config ?? {})) {
+    if (key.trim() === '' || !value || typeof value !== 'object') continue
+    const base = resolved[key] ?? { label: key, action: 'read' as KindAction }
+    const spec: KindSpec = {
+      label: typeof value.label === 'string' && value.label.trim() !== '' ? value.label : base.label,
+      action: isKindAction(value.action) ? value.action : base.action,
+    }
+    const postable = typeof value.postable === 'boolean' ? value.postable : base.postable
+    if (postable !== undefined) spec.postable = postable
+    resolved[key] = spec
+  }
+  return resolved
 }
 
 // ── ask_user_question 事件解析 ──────────────────────────────────────────────
@@ -363,13 +380,48 @@ export function isProgrammaticUserSource(source: unknown): boolean {
 export class Hub {
   /** 归因缓存：title 变化时重算。 */
   private inferCache = new Map<string, { title: string; first?: string; projectId: string | null }>()
+  /** 解析后的发现规则（markers / maxDepth / stopWords / excludeDirs）。 */
+  private discovery: DiscoveryOptions
+  /** 停用词（小写）：matchText 与别名派生跳过这些词。 */
+  private stopTokens: Set<string>
+  /** 建议路径的停用词比自动绑定宽：'papers' 在标题里是有区分度的线索，仅作建议展示。 */
+  private suggestStopTokens: Set<string>
+  /** 生效中的 kinds 注册表：投递校验与面板显示共用。 */
+  readonly kinds: Record<string, KindSpec>
+  /** 未知 kind 的告警通道；apply() 接线为宿主 logger，缺省 console.warn。 */
+  onWarn: (message: string) => void = (message) => console.warn(message)
+  /** 已告警过的未知 kind：每种只告警一次。 */
+  private warnedKinds = new Set<string>()
 
   constructor(
     private store: HubStore,
     private services: HubServices,
-    /** 待扫描的项目根。每项本身算一个项目，含 paper.toml/.git 的子目录另算。 */
+    /** 待扫描的项目根。每项本身算一个项目，按发现规则命中的子目录另算。 */
     private projectsRoots: readonly string[],
-  ) {}
+    /** 发现规则；缺省与 0.1.4 的硬编码行为完全一致。 */
+    discovery?: DiscoveryConfig | DiscoveryOptions | null,
+    /** 消息类型注册表；缺省只有内置三类，行为与 0.1.4 一致。 */
+    kinds?: KindsConfig | Record<string, KindSpec> | null,
+  ) {
+    this.discovery = resolveDiscoveryOptions(discovery)
+    this.stopTokens = new Set(this.discovery.stopWords.map((s) => s.toLowerCase()))
+    this.suggestStopTokens = new Set(this.discovery.stopWords.map((s) => s.toLowerCase()).filter((s) => s !== 'papers'))
+    this.kinds = resolveKinds(kinds)
+  }
+
+  /**
+   * 按注册表取一个消息类型的 label/action。
+   * 未注册的类型按 read 处理（只读展示，不出应答控件），每种类型只告警一次。
+   */
+  kindSpec(type: string): KindSpec {
+    const spec = this.kinds[type]
+    if (spec) return spec
+    if (!this.warnedKinds.has(type)) {
+      this.warnedKinds.add(type)
+      this.onWarn(`[research-hub] 未注册的消息类型 "${type}"，按 read 处理`)
+    }
+    return { label: type, action: 'read' }
+  }
 
   /** 只读数据面（面板载荷组装用）。 */
   get data() {
@@ -437,44 +489,16 @@ export class Hub {
 
   // ── 项目 ────────────────────────────────────────────────────────────────
 
-  /** 扫描每个项目根：含 paper.toml 或 .git 的子目录登记为项目；根目录本身也算一个项目。 */
+  /** 按发现规则扫描项目根并登记新项目；已有项目只增别名不删（保留用户后来加的）。 */
   discoverProjects(): void {
-    const found = new Map<string, { name: string; aliases: string[] }>()
-    const addDir = (dir: string, display: string) => {
-      const previous = found.get(dir)
-      found.set(dir, {
-        name: display,
-        aliases: uniq([...(previous?.aliases ?? []), ...deriveAliases(dir, display)]),
-      })
-    }
-    for (const root of this.projectsRoots) {
-      try {
-        if (!existsSync(root)) continue
-        const rootName = basename(root) || 'projects'
-        addDir(rootName, rootName)
-        for (const entry of readdirSync(root, { withFileTypes: true })) {
-          if (!entry.isDirectory() || entry.name.startsWith('.')) continue
-          const dir = join(root, entry.name)
-          const toml = join(dir, 'paper.toml')
-          const isProject = existsSync(toml) || existsSync(join(dir, '.git'))
-          if (!isProject) continue
-          let display = entry.name
-          try {
-            if (existsSync(toml)) display = paperTomlName(readFileSync(toml, 'utf8')) ?? entry.name
-          } catch { /* 读不到就用目录名 */ }
-          addDir(entry.name, display)
-        }
-      } catch { /* 单个根扫描失败不影响其他根 */ }
-    }
-
+    const found = scanProjectDirs(this.projectsRoots, this.discovery)
     let changed = false
-    for (const [id, info] of found) {
-      const existing = this.store.data.projects.find((p) => p.id === id)
+    for (const info of found) {
+      const existing = this.store.data.projects.find((p) => p.id === info.id)
       if (!existing) {
-        this.store.data.projects.push({ id, name: info.name, aliases: info.aliases, source: 'discovered', createdAt: Date.now() })
+        this.store.data.projects.push({ id: info.id, name: info.name, aliases: info.aliases, source: 'discovered', createdAt: Date.now() })
         changed = true
       } else if (existing.source === 'discovered') {
-        // 自动派生别名只增不删，保留用户后来加的
         const merged = uniq([...existing.aliases, ...info.aliases])
         if (merged.length !== existing.aliases.length) { existing.aliases = merged; changed = true }
         if (existing.name !== info.name && existing.name === existing.id) { existing.name = info.name; changed = true }
@@ -692,7 +716,7 @@ export class Hub {
       let score = 0
       for (const a of [p.id, p.name, ...p.aliases]) {
         const na = norm(a)
-        if (na.length < 3 || STOP_TOKENS.has(na)) continue
+        if (na.length < 3 || this.stopTokens.has(na)) continue
         if (t.includes(na)) score = Math.max(score, na.length)
       }
       if (score > 0) {
@@ -783,7 +807,7 @@ export class Hub {
       let score = 0
       for (const a of [p.id, p.name, ...p.aliases]) {
         const na = norm(a)
-        if (na.length < 3 || SUGGEST_STOP_TOKENS.has(na)) continue
+        if (na.length < 3 || this.suggestStopTokens.has(na)) continue
         if (t.includes(na)) score = Math.max(score, na.length)
       }
       if (score > 0 && (!best || score > best.score)) best = { id: p.id, score }

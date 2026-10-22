@@ -20,8 +20,23 @@ function harness() {
     compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2023, esModuleInterop: true },
   })
   const exports = {}
+  const localModules = {}
+  const loadLocal = (name, relativePath) => {
+    if (!localModules[name]) {
+      const localSource = readFileSync(new URL(relativePath, import.meta.url), 'utf8')
+      const { outputText } = ts.transpileModule(localSource, {
+        compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2023, esModuleInterop: true },
+      })
+      const localExports = {}
+      vm.runInNewContext(outputText, { exports: localExports, require: () => ({}) })
+      localModules[name] = localExports
+    }
+    return localModules[name]
+  }
   vm.runInNewContext(outputText, { exports, require: (name) => {
     if (name === './styles.js') return { HUB_CSS: readFileSync(new URL('../src/client/styles.ts', import.meta.url), 'utf8') }
+    // i18n 字典单独成模块：测试替身按需转译一次，避免断言落到真实 bundle 上。
+    if (name === './strings.js') return loadLocal(name, '../src/client/strings.ts')
     assert.equal(name, 'react'); return React
   } })
   const components = exports.__test

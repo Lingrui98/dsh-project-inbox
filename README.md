@@ -79,6 +79,8 @@ GitHub 源码快照不含 `lib/`，不能替代 Release 安装包。当前未发
 | `alertBackfillHours` | `72` | 冷读回填回看最近多少小时的会话日志 |
 | `alertInterruptedGraceMinutes` | `30` | 冷读观测的中断需要静默多少分钟才判定为真 |
 | `autoTrashProgrammatic` | `true` | 程序化会话（headless/脚本一次性运行）自动进入回收站 |
+| `discovery` | 见下 | 项目发现规则：`markers`（默认 `["paper.toml",".git"]`）、`maxDepth`（默认 `1`）、`stopWords`、`excludeDirs`（默认 `[".git","node_modules"]`） |
+| `kinds` | 内置三类 | 消息类型注册表：`question`/`deliverable`/`alert` 的 `label`、`action`（`answer`/`ack`/`inspect`/`read`）与 `postable`；可新增自定义类型 |
 
 推荐在 profile patch 里固定项目根目录，避免宿主从其他目录启动时丢失项目：
 
@@ -88,9 +90,20 @@ GitHub 源码快照不含 `lib/`，不能替代 Release 安装包。当前未发
   config:
     projectsRoots:
       - /path/to/projects
+    # 可选：按你的目录约定发现项目
+    discovery:
+      markers: [package.json, Cargo.toml, .git]
+      maxDepth: 2
+    # 可选：自定义消息类型（内置 question/deliverable/alert 始终存在）
+    kinds:
+      note:
+        label: 备忘
+        action: read
 ```
 
-插件会将每个根目录本身登记为项目，并扫描含 `paper.toml` 或 `.git` 的直接子目录。也可以在界面新建项目。插件不包含作者个人项目注册表、会话记录或机器路径。
+通用的多会话工作流可以用 `markers` 指向自己的项目标记文件（例如 `package.json`）。不配置 `discovery` 时行为与 0.1.4 完全一致。
+
+插件会将每个根目录本身登记为项目，并按 `discovery.markers` 扫描子目录（默认含 `paper.toml` 或 `.git`）。标记文件里的 `name`/`title` 会作为项目显示名。也可以在界面新建项目。插件不包含作者个人项目注册表、会话记录或机器路径。
 
 ### 程序化会话
 

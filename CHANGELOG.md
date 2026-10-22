@@ -1,5 +1,14 @@
 # Changelog
 
+## 未发布（通用化 0.2.0 方向）
+
+- 项目发现规则配置化：新增 `discovery.markers` / `maxDepth` / `stopWords` / `excludeDirs`，不再硬编码 `paper.toml`。不配置时行为与 0.1.4 完全一致。
+- 支持任意项目标记文件（如 `package.json`、`Cargo.toml`）与多层扫描；标记文件里的 `name`/`title` 作为项目显示名。
+- 消息类型改为注册表：新增 `kinds` 配置，内置 `question`/`deliverable`/`alert`，可新增自定义类型并配置 `label`、`action`、`postable`。内置 `alert` 由宿主产生，默认不可经 `hub_post` 投递。
+- store 升级到 v2：加载 v1 文件时先备份 `<store>.v1.bak`，补默认 kinds 后幂等迁移；v2 不重复迁移。
+- 客户端文案抽取为中英双语（`src/client/strings.ts`），按 `document.lang` → `navigator.language` → 中文回退自动选择；中文界面与 0.1.4 逐字一致。
+- 新增测试：`discovery.test.mjs`、`store-migration.test.mjs`、`client-i18n.test.mjs`；测试脚本纳入全部新用例。
+
 ## 0.1.4
 
 - 面板首页改为读持久化会话快照，热路径零 IO：重载/重启后首帧实测 15ms（改造前 2.6-7.8s），轮询实测 3-6ms（改造前 0.8-4.7s）。

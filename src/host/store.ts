@@ -13,7 +13,32 @@ export interface Project {
   createdAt: number
 }
 
-export type ItemType = 'question' | 'deliverable' | 'alert'
+/**
+ * 消息类型：内置 question / deliverable / alert，也可经 kinds 配置注册自定义类型。
+ * 放宽为 string 后，历史数据里出现的任何类型都能原样加载与展示。
+ */
+export type ItemType = string
+
+/** 消息类型的处理动作：answer 需回答，ack 一键确认，inspect 跳转会话，read 只读。 */
+export type KindAction = 'answer' | 'ack' | 'inspect' | 'read'
+
+/** 一种消息类型的显示与处理约定。 */
+export interface KindSpec {
+  /** 面板显示名。 */
+  label: string
+  /** 处理动作；未知 action 一律回落为 read。 */
+  action: KindAction
+  /** 是否允许 agent 经 hub_post 投递；中断由宿主产生，默认不可投递。 */
+  postable?: boolean
+}
+
+/** 内置三类：未配置 kinds 时行为与 0.1.4 完全一致，也是 v1 → v2 迁移补的默认值。 */
+export const DEFAULT_KINDS: Record<string, KindSpec> = {
+  question: { label: '待回答', action: 'answer', postable: true },
+  deliverable: { label: '待查收', action: 'ack', postable: true },
+  // 中断告警由宿主在 turn/end 时产生，agent 不能经 hub_post 伪造；配置可显式放开。
+  alert: { label: '中断', action: 'inspect', postable: false },
+}
 export type ItemStatus = 'pending' | 'answered' | 'dismissed'
 /** 条目来源：agent 工具投递、ask_user_question 镜像、宿主中断告警。 */
 export type ItemSource = 'tool' | 'auq' | 'system'
@@ -93,10 +118,13 @@ export interface SessionSnapshot {
 }
 
 export interface StoreData {
-  version: 1
+  /** 1：0.1.x 旧格式；2：起新增 kinds 快照，Item.type 放宽为 string。 */
+  version: 1 | 2
   projects: Project[]
   bindings: Record<string, Binding>
   items: HubItem[]
+  /** 生效中的 kinds 注册表快照（label/action）；配置移除某类型后历史条目仍能按快照显示。 */
+  kinds?: Record<string, KindSpec>
   /** 会话标题缓存（持久化，热重载/重启后面板秒开）。 */
   titles?: Record<string, { title: string; at: number }>
   /** 回收站：sessionId → 扫入时间。回收站会话不进任何收件箱视图。 */
@@ -130,14 +158,31 @@ export interface StoreData {
 }
 
 export class HubStore {
-  data: StoreData = { version: 1, projects: [], bindings: {}, items: [] }
+  data: StoreData = { version: 2, projects: [], bindings: {}, items: [] }
   private timer: ReturnType<typeof setTimeout> | null = null
 
   constructor(readonly file: string) {
     try {
+      let migrated = false
       if (existsSync(file)) {
-        const parsed = JSON.parse(readFileSync(file, 'utf8')) as StoreData
-        if (parsed && parsed.version === 1 && Array.isArray(parsed.projects) && Array.isArray(parsed.items)) {
+        const raw = readFileSync(file, 'utf8')
+        const parsed = JSON.parse(raw) as StoreData
+        if (
+          parsed
+          && (parsed.version === 1 || parsed.version === 2)
+          && Array.isArray(parsed.projects)
+          && Array.isArray(parsed.items)
+        ) {
+          if (parsed.version === 1) {
+            // v1 → v2 幂等迁移：先备份原始字节，再补默认 kinds，其余原样，最后写回 v2。
+            // 备份失败会进 catch：不写回，原文件保持 v1，下次加载重试。
+            writeFileSync(file + '.v1.bak', raw)
+            parsed.version = 2
+            if (!parsed.kinds || typeof parsed.kinds !== 'object') {
+              parsed.kinds = Object.fromEntries(Object.entries(DEFAULT_KINDS).map(([k, v]) => [k, { ...v }]))
+            }
+            migrated = true
+          }
           this.data = parsed
         }
       }
@@ -150,6 +195,7 @@ export class HubStore {
       if (!this.data.sessions) this.data.sessions = { at: 0, items: [] }
       if (!this.data.inferred) this.data.inferred = {}
       if (!this.data.auqScans) this.data.auqScans = {}
+      if (migrated) this.flush()
     } catch {
       /* 读取失败从空开始；原文件不覆盖，下次 flush 才替换 */
     }

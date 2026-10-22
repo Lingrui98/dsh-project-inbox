@@ -14,6 +14,7 @@ import { join } from 'node:path'
 import { homedir } from 'node:os'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import z from '@deepseek-ai/schemastery'
+import type Schema from '@deepseek-ai/schemastery'
 import {
   Hub,
   DEFAULT_ALERT_KINDS,
@@ -24,12 +25,19 @@ import {
   selectAlertCandidates,
   type HubServices,
 } from './host/core.js'
+import {
+  DEFAULT_EXCLUDE_DIRS,
+  DEFAULT_MARKERS,
+  DEFAULT_STOP_WORDS,
+  resolveDiscoveryOptions,
+  type DiscoveryConfig,
+} from './host/discovery.js'
 import { HubStore, type HubItem } from './host/store.js'
 
 export const name = '@dsh-external/dsh-research-hub'
 export const inject = ['tools', 'systemPrompt', 'webServer', 'sessionController', 'userQuestions', 'agents', 'sessionQuery', 'sessionProjections', 'timer', 'workspaceController']
 
-export const Config = z.object({
+export const Config: Schema<any, ConfigShape> = z.object({
   projectsRoot: z.string().default(process.env.DSH_RESEARCH_HUB_PROJECTS_ROOT || process.cwd()),
   /** 固定项目发现范围：非空时替代 projectsRoot，项目不再随宿主启动目录变化。 */
   projectsRoots: z.array(z.string()).default([]),
@@ -48,6 +56,29 @@ export const Config = z.object({
    * 这类会话是 headless 或脚本的一次性运行，工作由注册任务的主会话承接。
    */
   autoTrashProgrammatic: z.boolean().default(true),
+  /** 项目发现规则；缺省与 0.1.4 的硬编码行为完全一致。 */
+  discovery: z.object({
+    /** 目录含任一标记文件即登记为项目（如 paper.toml、.git、package.json）。 */
+    markers: z.array(z.string()).default([...DEFAULT_MARKERS]),
+    /** 从项目根往下扫描的层数：0 只登记根本身，1 是 0.1.4 的行为。 */
+    maxDepth: z.number().default(1),
+    /** 归因停用词：别名派生与文本匹配都跳过这些词。 */
+    stopWords: z.array(z.string()).default([...DEFAULT_STOP_WORDS]),
+    /** 扫描时跳过的目录名；隐藏目录（. 开头）始终跳过。 */
+    excludeDirs: z.array(z.string()).default([...DEFAULT_EXCLUDE_DIRS]),
+  }).default({}),
+  /**
+   * 消息类型注册表：内置 question（answer）/ deliverable（ack）/ alert（inspect）。
+   * 配置按键覆盖内置条目或新增自定义类型；自定义类型缺省 action 为 read。
+   */
+  kinds: z.dict(z.object({
+    /** 面板显示名；空字符串回落到内置值或类型名。 */
+    label: z.string().default(''),
+    /** 处理动作：answer / ack / inspect / read；未知值回落为 read。 */
+    action: z.string().default(''),
+    /** 是否允许 agent 经 hub_post 投递；内置 alert 默认 false。 */
+    postable: z.boolean().default(true),
+  })).default({}),
 })
 
 interface ConfigShape {
@@ -58,6 +89,8 @@ interface ConfigShape {
   alertBackfillHours: number
   alertInterruptedGraceMinutes: number
   autoTrashProgrammatic: boolean
+  discovery: DiscoveryConfig
+  kinds: Record<string, { label: string; action: string; postable: boolean }>
 }
 
 type AppContext = Context & {
@@ -528,6 +561,8 @@ function buildPanel(hub: Hub, ctx: AppContext, config: ConfigShape, alertState: 
   const titleById = new Map(sessions.map((s) => [s.id, s.title]))
   const enrich = (it: HubItem) => ({
     ...it,
+    // 面板按 kinds 注册表取 label/action；未注册类型由 kindSpec 回落为 read 并告警一次
+    kind: hub.kindSpec(it.type),
     sessionTitle: titleById.get(it.sessionId) || it.sessionTitle,
     sessionRunning: runningById.get(it.sessionId) ?? false,
     sessionVisible: runningById.has(it.sessionId),
@@ -571,6 +606,8 @@ function buildPanel(hub: Hub, ctx: AppContext, config: ConfigShape, alertState: 
     trashedSessions,
     unassignedSessions: sessions.filter((s) => s.projectId === null),
     unassignedCounts: countsOf(null),
+    /** 生效中的 kinds 注册表：面板按它渲染 label/action，type 字段保留原值。 */
+    kinds: hub.kinds,
     // 待处理项必须完整返回，只有历史记录限制数量，避免计数与可处理列表不一致。
     items: [...items.filter((it) => it.status === 'pending'), ...items.filter((it) => it.status !== 'pending').slice(0, 300)].map(enrich),
   }
@@ -604,7 +641,14 @@ export function apply(ctx: AppContext, config: ConfigShape): void {
     agents: ctx.agents,
   }
   const hubRoots = config.projectsRoots?.length > 0 ? config.projectsRoots : [config.projectsRoot]
-  const hub = new Hub(store, services, hubRoots)
+  const hub = new Hub(store, services, hubRoots, resolveDiscoveryOptions(config.discovery), config.kinds)
+  hub.onWarn = (message) => ctx.logger?.warn?.(message)
+  // 落盘生效中的 kinds 快照：配置移除某类型后，历史条目仍能按快照显示
+  if (JSON.stringify(store.data.kinds ?? null) !== JSON.stringify(hub.kinds)) {
+    // 拷贝而不是共享引用：注册表后续变化不污染已落盘快照
+    store.data.kinds = JSON.parse(JSON.stringify(hub.kinds))
+    store.touch()
+  }
   // 清理陈旧绑定：无前缀 id 属于子代理会话（subagent routing），不应占位
   let staleBindings = 0
   for (const key of Object.keys(store.data.bindings)) {
@@ -808,7 +852,7 @@ export function apply(ctx: AppContext, config: ConfigShape): void {
     parameters: {
       type: 'object',
       properties: {
-        type: { type: 'string', enum: ['question', 'deliverable'], description: '消息类型' },
+        type: { type: 'string', description: `消息类型（已注册：${Object.keys(hub.kinds).join(' / ')}）` },
         title: { type: 'string', description: '一句话标题' },
         body: { type: 'string', description: '正文：背景、选项、结论、路径等' },
         priority: { type: 'string', enum: ['normal', 'urgent'], description: 'urgent 会在收件箱置顶' },
@@ -826,8 +870,10 @@ export function apply(ctx: AppContext, config: ConfigShape): void {
       if (isSubagentCaller(ctx, sessionId)) {
         return { ok: false, error: '子代理会话不在指挥中心范围内，产出请直接汇报给父会话（父会话会自行决定是否交付到指挥中心）' }
       }
-      const type = args?.type === 'deliverable' ? 'deliverable' : args?.type === 'question' ? 'question' : undefined
-      if (!type) return { ok: false, error: 'type 必须是 question 或 deliverable' }
+      const spec = typeof args?.type === 'string' ? hub.kinds[args.type] : undefined
+      if (!spec) return { ok: false, error: `未知消息类型，已注册类型：${Object.keys(hub.kinds).join(' / ')}` }
+      if (spec.postable === false) return { ok: false, error: `消息类型 ${String(args?.type)} 由宿主产生，不能经 hub_post 投递` }
+      const type = String(args?.type)
       const title = String(args?.title ?? '').trim()
       if (!title) return { ok: false, error: 'title 不能为空' }
       let projectId: string | null | undefined
