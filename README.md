@@ -16,7 +16,7 @@
 - **会话导航**：点击标题打开会话。会话头部的“指挥中心”按钮回到此前页面。
 - **自动归属**：从项目根目录发现项目。主会话首条直接用户消息到达后，插件按标题和消息内容推断项目并自动绑定唯一匹配。无法唯一匹配时保持未分配。手动绑定优先于自动绑定。
 - **高效分拣**：建议归属、就地创建项目、指挥中心专属回收站。回收站只隐藏会话，不删除 DSH 会话本身。
-- **范围过滤**：排除子代理、空白会话、已归档会话和回收站会话。归档状态跟随宿主推送。
+- **范围过滤**：排除子代理、空白会话、已归档会话、回收站会话和程序化会话（headless/脚本一次性运行）。归档状态跟随宿主推送。
 - **主题适配**：亮暗主题、自然卡片高度、按面板实际宽度切换分栏、明确焦点和减少动画支持。
 
 ## 安装
@@ -72,18 +72,34 @@ GitHub 源码快照不含 `lib/`，不能替代 Release 安装包。当前未发
 | 字段 | 默认值 | 含义 |
 | --- | --- | --- |
 | `projectsRoot` | `DSH_RESEARCH_HUB_PROJECTS_ROOT` 环境变量，否则为启动 DSH 的工作目录 | 自动发现项目的根目录 |
+| `projectsRoots` | `[]` | 固定项目发现范围；非空时替代 `projectsRoot`，项目不随宿主启动目录变化 |
 | `storeFile` | profile 目录内的 `research-hub.json` | 指挥中心持久化文件 |
 | `alertKinds` | `["error","interrupted","aborted:disposed"]` | 需要投递收件箱的会话中断原因 |
 | `alertBackfillHours` | `72` | 冷读回填回看最近多少小时的会话日志 |
 | `alertInterruptedGraceMinutes` | `30` | 冷读观测的中断需要静默多少分钟才判定为真 |
+| `autoTrashProgrammatic` | `true` | 程序化会话（headless/脚本一次性运行）自动进入回收站 |
 
-推荐启动时指定项目根目录：
+推荐在 profile patch 里固定项目根目录，避免宿主从其他目录启动时丢失项目：
 
-```bash
-DSH_RESEARCH_HUB_PROJECTS_ROOT="$HOME/projects" dsh web
+```yaml
+- id: dsh-research-hub
+  name: '@dsh-external/dsh-research-hub'
+  config:
+    projectsRoots:
+      - /path/to/projects
 ```
 
-插件会将根目录本身登记为项目，并扫描含 `paper.toml` 或 `.git` 的直接子目录。也可以在界面新建项目。插件不包含作者个人项目注册表、会话记录或机器路径。
+插件会将每个根目录本身登记为项目，并扫描含 `paper.toml` 或 `.git` 的直接子目录。也可以在界面新建项目。插件不包含作者个人项目注册表、会话记录或机器路径。
+
+### 程序化会话
+
+headless 或脚本从标准输入发起的一次性会话，首条用户消息没有客户端标识（`rpcId`）。这类会话的工作由注册任务的主会话承接，因此插件会把它自动扫进回收站，不计入项目、收件箱或角标。
+
+- 判定只看首条用户消息的来源，判定一次后缓存，不重复冷读日志。
+- 用户或 agent 显式绑定过项目的会话保留，不自动回收。
+- 从回收站恢复的会话视为长期豁免，不再自动回收。
+- 关闭该行为：把 `autoTrashProgrammatic` 设为 `false`。
+
 
 ### 中断告警
 

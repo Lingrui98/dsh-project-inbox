@@ -2,18 +2,28 @@
  * @dsh-external/dsh-research-hub — host 侧：跨会话项目指挥中心。
  *
  * 职责：
- * 1. 项目注册表：扫描 projectsRoot（含 paper.toml/.git 的子目录）+ 手动添加。
+ * 1. 项目注册表：扫描项目根（含 paper.toml/.git 的子目录）+ 手动添加。
  * 2. 会话归因：显式绑定（用户/agent 自报）> 内容推断（标题+首条消息匹配别名）。
  * 3. 消息通道：hub_register / hub_post 两个工具；ask_user_question 瀑布事件被动镜像。
  * 4. 回复路由：AUQ 走 userQuestions.answer 结构化应答，其余走 sessionController.prompt。
- * 5. 面板 API：POST /rhub/api/<method>（loopback Host 头围栏）。
+ * 5. 程序化会话（headless/脚本一次性运行）不参与指挥中心，自动进入回收站。
+ * 6. 面板 API：POST /rhub/api/<method>（loopback Host 头围栏）。
  */
 import type { Context } from '@deepseek-ai/cordis'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import z from '@deepseek-ai/schemastery'
-import { Hub, DEFAULT_ALERT_KINDS, foldTurnAlerts, foldOpenAuqQuestions, selectAlertCandidates, type HubServices } from './host/core.js'
+import {
+  Hub,
+  DEFAULT_ALERT_KINDS,
+  firstUserMessageEvent,
+  foldTurnAlerts,
+  foldOpenAuqQuestions,
+  isProgrammaticUserSource,
+  selectAlertCandidates,
+  type HubServices,
+} from './host/core.js'
 import { HubStore, type HubItem } from './host/store.js'
 
 export const name = '@dsh-external/dsh-research-hub'
@@ -21,6 +31,8 @@ export const inject = ['tools', 'systemPrompt', 'webServer', 'sessionController'
 
 export const Config = z.object({
   projectsRoot: z.string().default(process.env.DSH_RESEARCH_HUB_PROJECTS_ROOT || process.cwd()),
+  /** 固定项目发现范围：非空时替代 projectsRoot，项目不再随宿主启动目录变化。 */
+  projectsRoots: z.array(z.string()).default([]),
   storeFile: z.string().default(''),
   /** 需要告警的 turn/end 原因标记，见 DEFAULT_ALERT_KINDS。 */
   alertKinds: z.array(z.string()).default([...DEFAULT_ALERT_KINDS]),
@@ -31,14 +43,21 @@ export const Config = z.object({
    * 别的进程里正在运行的会话在冷读里同样是"末尾回合未闭合"。
    */
   alertInterruptedGraceMinutes: z.number().default(30),
+  /**
+   * 首条用户消息不带客户端标识的会话自动进入回收站。
+   * 这类会话是 headless 或脚本的一次性运行，工作由注册任务的主会话承接。
+   */
+  autoTrashProgrammatic: z.boolean().default(true),
 })
 
 interface ConfigShape {
   projectsRoot: string
+  projectsRoots: string[]
   storeFile: string
   alertKinds: string[]
   alertBackfillHours: number
   alertInterruptedGraceMinutes: number
+  autoTrashProgrammatic: boolean
 }
 
 type AppContext = Context & {
@@ -304,6 +323,70 @@ async function backfillTurnAlerts(
   }
 }
 
+/** 程序化会话自动回收的节流状态。 */
+interface ProgrammaticSweepState {
+  running: boolean
+  lastAt: number
+}
+
+/**
+ * 程序化会话自动回收。
+ *
+ * headless 或脚本从 stdin 发起的一次性会话没有客户端标识，工作由注册任务的主会话承接，
+ * 因此不计入指挥中心。判定只看首条用户消息的来源，判定一次后永久缓存。
+ * 用户或 agent 显式绑定过项目的会话保留；人工从回收站恢复的会话长期豁免。
+ */
+async function sweepProgrammaticSessions(
+  hub: Hub,
+  ctx: AppContext,
+  config: ConfigShape,
+  state: ProgrammaticSweepState,
+): Promise<void> {
+  if (config.autoTrashProgrammatic === false || state.running) return
+  const now = Date.now()
+  if (now - state.lastAt < 30_000) return
+  state.lastAt = now
+  state.running = true
+  try {
+    const candidates = (await hub.listSessionsCached())
+      .map(normalizeSession)
+      .filter((session): session is NormalizedSession => Boolean(session))
+      .filter((session) => session.origin !== 'subagent' && !session.parentSessionId && !session.blank)
+      .filter((session) => !archivedLive.has(session.id))
+      .filter((session) => !hub.isTrashed(session.id) && !hub.isTrashExempt(session.id))
+      .filter((session) => !hub.hasExplicitBinding(session.id))
+      .filter((session) => hub.programmaticVerdict(session.id) === undefined)
+      .sort((a, b) => b.updatedAt - a.updatedAt)
+      .slice(0, 12)
+    let cursor = 0
+    const worker = async () => {
+      while (cursor < candidates.length) {
+        const session = candidates[cursor]
+        cursor += 1
+        try {
+          const inspection = await ctx.sessionController.inspect(session.id)
+          const first = firstUserMessageEvent(inspection?.events)
+          // 首条用户消息还没落盘（新建会话）：下一轮再判
+          if (first === undefined) continue
+          const programmatic = isProgrammaticUserSource(first?.data?.source)
+          hub.recordProgrammaticVerdict(session.id, programmatic)
+          if (!programmatic || hub.hasExplicitBinding(session.id)) continue
+          if (hub.trashSession(session.id)) {
+            ctx.logger?.info?.(`[research-hub] 程序化会话已自动回收：${session.id}`)
+          }
+        } catch {
+          /* 冷会话可能在并发归档或清理中消失：不写判定，下一轮重试 */
+        }
+      }
+    }
+    await Promise.all(Array.from({ length: Math.min(2, candidates.length) }, worker))
+  } catch (error) {
+    ctx.logger?.warn?.('[research-hub] 程序化会话自动回收失败', error)
+  } finally {
+    state.running = false
+  }
+}
+
 async function buildPanel(hub: Hub, ctx: AppContext, config: ConfigShape, alertState: AlertBackfillState): Promise<unknown> {
   // 项目发现走 60s 定时与 rescan，不在面板热路径上
   // 子 agent 会话不纳入（origin === 'subagent'）；其投递经 parentOf 归到父会话项目
@@ -465,7 +548,8 @@ export function apply(ctx: AppContext, config: ConfigShape): void {
     userQuestions: ctx.userQuestions,
     agents: ctx.agents,
   }
-  const hub = new Hub(store, services, config.projectsRoot)
+  const hubRoots = config.projectsRoots?.length > 0 ? config.projectsRoots : [config.projectsRoot]
+  const hub = new Hub(store, services, hubRoots)
   // 清理陈旧绑定：无前缀 id 属于子代理会话（subagent routing），不应占位
   let staleBindings = 0
   for (const key of Object.keys(store.data.bindings)) {
@@ -524,6 +608,18 @@ export function apply(ctx: AppContext, config: ConfigShape): void {
       }
     })()
   }, 5 * 60_000)
+
+  // 程序化会话自动回收：启动后补扫一次，之后每分钟增量扫描（判定结果持久缓存）
+  const sweepState: ProgrammaticSweepState = { running: false, lastAt: 0 }
+  ctx.effect(() => {
+    const timer = setTimeout(() => {
+      void sweepProgrammaticSessions(hub, ctx, config, sweepState)
+    }, 12_000)
+    return () => clearTimeout(timer)
+  }, 'research-hub: startup programmatic session sweep')
+  ctx.setInterval(() => {
+    void sweepProgrammaticSessions(hub, ctx, config, sweepState)
+  }, 60_000)
 
   // 实时中断告警：turn/end 写入告警条目，turn/start 收掉该会话待处理告警
   ctx.effect(() => {
@@ -763,6 +859,8 @@ export function apply(ctx: AppContext, config: ConfigShape): void {
 
   const api: Record<string, (payload: any) => Promise<unknown> | unknown> = {
     async panel() {
+      // 面板热路径不等待扫描；扫完后面板轮询自然收敛
+      void sweepProgrammaticSessions(hub, ctx, config, sweepState)
       return buildPanel(hub, ctx, config, alertState)
     },
     /** 轻量角标数据：只读内存 store，不触发归因与标题读取。 */
@@ -840,16 +938,12 @@ export function apply(ctx: AppContext, config: ConfigShape): void {
       return { ok: true }
     },
     trashSession(payload) {
-      const sessionId = requireString(payload, 'sessionId')
-      if (!store.data.trashed) store.data.trashed = {}
-      store.data.trashed[sessionId] = Date.now()
-      store.touch()
+      hub.trashSession(requireString(payload, 'sessionId'))
       return { ok: true }
     },
     restoreSession(payload) {
-      const sessionId = requireString(payload, 'sessionId')
-      if (store.data.trashed) delete store.data.trashed[sessionId]
-      store.touch()
+      // 人工恢复视为长期决定：该会话以后不再自动回收
+      hub.restoreSession(requireString(payload, 'sessionId'))
       return { ok: true }
     },
     bind(payload) {
@@ -869,8 +963,9 @@ export function apply(ctx: AppContext, config: ConfigShape): void {
     async rescan() {
       hub.invalidateCaches()
       hub.discoverProjects()
-      // 手动重新扫描视为显式请求：强制补一次中断告警
+      // 手动重新扫描视为显式请求：强制补一次中断告警与程序化会话扫描
       void backfillTurnAlerts(hub, ctx, config, alertState, await hub.listSessionsCached(), true)
+      void sweepProgrammaticSessions(hub, ctx, config, sweepState)
       return buildPanel(hub, ctx, config, alertState)
     },
   }
@@ -912,5 +1007,5 @@ export function apply(ctx: AppContext, config: ConfigShape): void {
     },
   } as any), 'research-hub: /rhub/api routes')
 
-  ctx.logger?.info?.('[research-hub] 指挥中心已启动，存储：' + storeFile + '，项目根：' + config.projectsRoot)
+  ctx.logger?.info?.('[research-hub] 指挥中心已启动，存储：' + storeFile + '，项目根：' + hubRoots.join(', '))
 }

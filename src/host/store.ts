@@ -95,6 +95,13 @@ export interface StoreData {
   alertKeys?: Record<string, string>
   /** 中断告警扫描游标：sessionId → 该会话已扫描到的 updatedAt，避免重复冷读日志。 */
   alertScans?: Record<string, { at: number; updatedAt: number }>
+  /**
+   * 程序化会话判定：sessionId → 首条用户消息是否没有客户端标识（rpcId）。
+   * 首条消息不可变，判定结果只写一次，后续扫描直接命中缓存。
+   */
+  programmatic?: Record<string, boolean>
+  /** 人工从回收站恢复过的会话：sessionId → 恢复时间。恢复视为长期豁免，不再自动回收。 */
+  trashExempt?: Record<string, number>
 }
 
 export class HubStore {
@@ -113,6 +120,8 @@ export class HubStore {
       if (!this.data.trashed) this.data.trashed = {}
       if (!this.data.alertKeys) this.data.alertKeys = {}
       if (!this.data.alertScans) this.data.alertScans = {}
+      if (!this.data.programmatic) this.data.programmatic = {}
+      if (!this.data.trashExempt) this.data.trashExempt = {}
     } catch {
       /* 读取失败从空开始；原文件不覆盖，下次 flush 才替换 */
     }

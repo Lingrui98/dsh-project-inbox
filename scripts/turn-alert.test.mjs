@@ -76,7 +76,7 @@ function makeHub(file = storeFile) {
     userQuestions: { answer: () => false },
     agents: { roots: () => [] },
   }
-  return { hub: new Hub(store, services, root), store }
+  return { hub: new Hub(store, services, [root]), store }
 }
 
 // ── 折叠：原因白名单 ────────────────────────────────────────────────────────
@@ -447,10 +447,12 @@ test('apply() 接线：实时 turn/end 建告警，面板与角标计数，turn/
   try {
     apply(fake.ctx, {
       projectsRoot,
+      projectsRoots: [projectsRoot],
       storeFile: applyStoreFile,
       alertKinds: [...DEFAULT_ALERT_KINDS],
       alertBackfillHours: 72,
       alertInterruptedGraceMinutes: 30,
+      autoTrashProgrammatic: false,
     })
     const handler = fake.webServers[0]?.handler
     assert.equal(typeof handler, 'function', '应注册 /rhub/api 处理器')

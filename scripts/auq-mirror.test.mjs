@@ -62,7 +62,7 @@ function makeHub(options = {}) {
     },
     agents: { roots: () => [] },
   }
-  const hub = new Hub(store, services, root)
+  const hub = new Hub(store, services, [root])
   hub.data.projects.push({ id: 'proj', name: 'proj', aliases: ['proj'], source: 'manual', createdAt: 1 })
   hub.data.bindings['session-test-1'] = { projectId: 'proj', locked: true, by: 'user', updatedAt: 1 }
   return { hub, calls }

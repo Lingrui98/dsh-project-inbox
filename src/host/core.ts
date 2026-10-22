@@ -341,6 +341,25 @@ export function selectAlertCandidates(
   return { alerts, deferred }
 }
 
+/** 一条会话事件日志里的首条用户消息；没有用户消息时返回 undefined。 */
+export function firstUserMessageEvent(events: readonly any[] | undefined): any | undefined {
+  if (!Array.isArray(events)) return undefined
+  return events.find((event) => event?.type === 'user/message')
+}
+
+/**
+ * 一条用户消息是否来自程序化运行。
+ *
+ * Web 客户端发送的消息总带 `rpcId`；headless 从 stdin 读入的任务只有 `kind: "user"`。
+ * 因此「来源是普通用户输入、但没有客户端标识」就是脚本或无人值守进程的一次性运行。
+ */
+export function isProgrammaticUserSource(source: unknown): boolean {
+  if (typeof source !== 'object' || source === null) return false
+  const record = source as { kind?: unknown; rpcId?: unknown }
+  if (record.kind !== 'user') return false
+  return typeof record.rpcId !== 'string' || record.rpcId.length === 0
+}
+
 export class Hub {
   /** 归因缓存：title 变化时重算。 */
   private inferCache = new Map<string, { title: string; first?: string; projectId: string | null }>()
@@ -348,7 +367,8 @@ export class Hub {
   constructor(
     private store: HubStore,
     private services: HubServices,
-    private projectsRoot: string,
+    /** 待扫描的项目根。每项本身算一个项目，含 paper.toml/.git 的子目录另算。 */
+    private projectsRoots: readonly string[],
   ) {}
 
   /** 只读数据面（面板载荷组装用）。 */
@@ -366,21 +386,75 @@ export class Hub {
     this.listCache = null
   }
 
+  // ── 回收站与程序化会话 ──────────────────────────────────────────────────
+
+  /** 程序化判定结果；undefined 表示尚未判定。 */
+  programmaticVerdict(sessionId: string): boolean | undefined {
+    const cached = this.store.data.programmatic?.[sessionId]
+    return typeof cached === 'boolean' ? cached : undefined
+  }
+
+  /** 记录判定。首条用户消息不会变化，同一会话只写一次。 */
+  recordProgrammaticVerdict(sessionId: string, programmatic: boolean): void {
+    if (this.store.data.programmatic?.[sessionId] === programmatic) return
+    if (!this.store.data.programmatic) this.store.data.programmatic = {}
+    this.store.data.programmatic[sessionId] = programmatic
+    this.store.touch()
+  }
+
+  /** 用户或 agent 显式绑定的会话优先，自动回收不动它们。 */
+  hasExplicitBinding(sessionId: string): boolean {
+    const binding = this.store.data.bindings[sessionId]
+    return binding !== undefined && (binding.locked || binding.by !== 'auto')
+  }
+
+  /** 会话是否已在回收站。 */
+  isTrashed(sessionId: string): boolean {
+    return this.store.data.trashed?.[sessionId] !== undefined
+  }
+
+  /** 会话是否被人工恢复过；恢复视为长期豁免。 */
+  isTrashExempt(sessionId: string): boolean {
+    return this.store.data.trashExempt?.[sessionId] !== undefined
+  }
+
+  /** 把会话扫进回收站；已在回收站时返回 false。 */
+  trashSession(sessionId: string): boolean {
+    if (this.isTrashed(sessionId)) return false
+    if (!this.store.data.trashed) this.store.data.trashed = {}
+    this.store.data.trashed[sessionId] = Date.now()
+    this.store.touch()
+    return true
+  }
+
+  /** 恢复会话，并长期豁免自动回收。 */
+  restoreSession(sessionId: string): void {
+    if (this.store.data.trashed) delete this.store.data.trashed[sessionId]
+    if (!this.store.data.trashExempt) this.store.data.trashExempt = {}
+    this.store.data.trashExempt[sessionId] = Date.now()
+    this.store.touch()
+  }
+
   // ── 项目 ────────────────────────────────────────────────────────────────
 
-  /** 扫描 projectsRoot：含 paper.toml 或 .git 的子目录登记为项目；根目录本身也算一个项目。 */
+  /** 扫描每个项目根：含 paper.toml 或 .git 的子目录登记为项目；根目录本身也算一个项目。 */
   discoverProjects(): void {
     const found = new Map<string, { name: string; aliases: string[] }>()
     const addDir = (dir: string, display: string) => {
-      found.set(dir, { name: display, aliases: deriveAliases(dir, display) })
+      const previous = found.get(dir)
+      found.set(dir, {
+        name: display,
+        aliases: uniq([...(previous?.aliases ?? []), ...deriveAliases(dir, display)]),
+      })
     }
-    try {
-      if (existsSync(this.projectsRoot)) {
-        const rootName = basename(this.projectsRoot) || 'projects'
+    for (const root of this.projectsRoots) {
+      try {
+        if (!existsSync(root)) continue
+        const rootName = basename(root) || 'projects'
         addDir(rootName, rootName)
-        for (const entry of readdirSync(this.projectsRoot, { withFileTypes: true })) {
+        for (const entry of readdirSync(root, { withFileTypes: true })) {
           if (!entry.isDirectory() || entry.name.startsWith('.')) continue
-          const dir = join(this.projectsRoot, entry.name)
+          const dir = join(root, entry.name)
           const toml = join(dir, 'paper.toml')
           const isProject = existsSync(toml) || existsSync(join(dir, '.git'))
           if (!isProject) continue
@@ -390,8 +464,8 @@ export class Hub {
           } catch { /* 读不到就用目录名 */ }
           addDir(entry.name, display)
         }
-      }
-    } catch { /* 扫描失败保留现状 */ }
+      } catch { /* 单个根扫描失败不影响其他根 */ }
+    }
 
     let changed = false
     for (const [id, info] of found) {

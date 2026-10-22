@@ -40,7 +40,7 @@ test('release tarball contains a complete, portable, loadable DSH bundle', async
   const { Hub } = await import(pathToFileURL(join(dir, 'lib/host/core.js')))
   const { HubStore } = await import(pathToFileURL(join(dir, 'lib/host/store.js')))
   const store = new HubStore(join(temp, 'state', 'research-hub.json'))
-  const hub = new Hub(store, {}, join(temp, 'projects'))
+  const hub = new Hub(store, {}, [join(temp, 'projects')])
   const project = hub.addProject('Example Project')
   assert.equal(project.id, 'Example-Project')
   let firstMessage = ''
@@ -49,7 +49,7 @@ test('release tarball contains a complete, portable, loadable DSH bundle', async
       readTitle: async () => ({ title: 'Unrelated session' }),
       filterEvents: async () => firstMessage ? [{ text: firstMessage }] : [],
     },
-  }, join(temp, 'projects'))
+  }, [join(temp, 'projects')])
   assert.equal(await inferHub.inferSession('session-infer'), null)
   firstMessage = 'Working on Example Project results'
   assert.equal(await inferHub.inferSession('session-infer'), project.id)
