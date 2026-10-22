@@ -5,7 +5,7 @@
 
 把分散的 DSH 会话组织成项目工作台。集中处理问题与交付结果，直接回复，并在会话与指挥中心之间往返。
 
-这是独立的第三方插件，不是 DeepSeek 官方产品。当前公开版本为 **v0.1.2**，已在 **DSH 0.2.0-rc.2 Web profile** 验证。DSH 的预发布接口可能变化，其他版本不作兼容承诺。
+这是独立的第三方插件，不是 DeepSeek 官方产品。当前公开版本为 **v0.1.4**，已在 **DSH 0.2.0-rc.2 Web profile** 验证。DSH 的预发布接口可能变化，其他版本不作兼容承诺。
 
 ## 功能
 
@@ -18,6 +18,7 @@
 - **高效分拣**：建议归属、就地创建项目、指挥中心专属回收站。回收站只隐藏会话，不删除 DSH 会话本身。
 - **范围过滤**：排除子代理、空白会话、已归档会话、回收站会话和程序化会话（headless/脚本一次性运行）。归档状态跟随宿主推送。
 - **主题适配**：亮暗主题、自然卡片高度、按面板实际宽度切换分栏、明确焦点和减少动画支持。
+- **快速首页**：首页读持久化会话快照，打开面板与轮询在毫秒级；会话列表、归因与问题镜像在后台增量刷新。
 
 ## 安装
 
@@ -26,15 +27,15 @@
 从 [Releases](https://github.com/Lingrui98/dsh-research-hub/releases/latest) 下载 `.tgz` 和 `SHA256SUMS`。安装包包含编译后的 host、client 与 bundle patch，不需要在用户机器编译。
 
 ```bash
-curl -fL -O https://github.com/Lingrui98/dsh-research-hub/releases/download/v0.1.2/dsh-external-dsh-research-hub-0.1.2.tgz
-curl -fL -O https://github.com/Lingrui98/dsh-research-hub/releases/download/v0.1.2/SHA256SUMS
+curl -fL -O https://github.com/Lingrui98/dsh-research-hub/releases/download/v0.1.4/dsh-external-dsh-research-hub-0.1.4.tgz
+curl -fL -O https://github.com/Lingrui98/dsh-research-hub/releases/download/v0.1.4/SHA256SUMS
 sha256sum -c SHA256SUMS
 ```
 
 在 DSH 的插件管理界面使用安装包的绝对路径或下列 tarball URL 安装并启用 bundle：
 
 ```text
-https://github.com/Lingrui98/dsh-research-hub/releases/download/v0.1.2/dsh-external-dsh-research-hub-0.1.2.tgz
+https://github.com/Lingrui98/dsh-research-hub/releases/download/v0.1.4/dsh-external-dsh-research-hub-0.1.4.tgz
 ```
 
 若界面没有插件安装入口，参见下方 CLI 方法。**只安装到可信的本机 DSH 环境。插件可读取会话标题、项目文件和消息，并可向会话发送回复。**
@@ -44,7 +45,7 @@ https://github.com/Lingrui98/dsh-research-hub/releases/download/v0.1.2/dsh-exter
 先停止目标 Web profile，再安装预构建包：
 
 ```bash
-dsh plugin --profile web add /absolute/path/to/dsh-external-dsh-research-hub-0.1.2.tgz
+dsh plugin --profile web add /absolute/path/to/dsh-external-dsh-research-hub-0.1.4.tgz
 ```
 
 DSH 会自动将 bundle 追加到目标 profile 的 `package.json` 中的 `dsh.profile.bundles`。可以检查该数组是否包含 `@dsh-external/dsh-research-hub`。**不要额外把相同插件手动插入 profile patch**，避免重复装配。
