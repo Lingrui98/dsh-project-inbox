@@ -36,8 +36,8 @@ test('en 字典每个键都有定义，且值类型与 zh 一致', () => {
 test('zh 抽样文案与 0.1.4 逐字一致', () => {
   const { zh } = loadStrings([])
   // 静态文案
-  assert.equal(zh.loading, '正在加载指挥中心…')
-  assert.equal(zh.hubName, '指挥中心')
+  assert.equal(zh.loading, '正在加载收件箱…')
+  assert.equal(zh.hubName, '项目收件箱')
   assert.equal(zh.retry, '重试')
   assert.equal(zh.back, '← 返回')
   assert.equal(zh.typeQuestionPending, '待回答')
@@ -57,8 +57,8 @@ test('zh 抽样文案与 0.1.4 逐字一致', () => {
   assert.equal(zh.inboxEmptyTitle, '当前没有待处理消息')
   assert.equal(zh.noProjects, '暂无项目。可以新建项目，或重新扫描发现项目。')
   assert.equal(zh.trashEmpty, '回收站是空的。未分配区会话行上的垃圾桶按钮会把不重要的会话扫到这里。')
-  assert.equal(zh.returnLabel, '← 指挥中心')
-  assert.equal(zh.returnTitle, '回到指挥中心（保留你离开时的页面）')
+  assert.equal(zh.returnLabel, '← 收件箱')
+  assert.equal(zh.returnTitle, '回到收件箱（保留你离开时的页面）')
   assert.equal(zh.newProjectOption, '＋ 新建项目并归入')
   // 插值文案
   assert.equal(zh.agoSeconds(5), '5 秒前')

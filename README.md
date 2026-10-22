@@ -1,19 +1,19 @@
-# DSH Research Hub · 项目工作台
+# DSH Project Inbox · 项目收件箱
 
 [English](README_EN.md) | 中文
 
-[![Release](https://img.shields.io/github/v/release/Lingrui98/dsh-research-hub)](https://github.com/Lingrui98/dsh-research-hub/releases/latest)
-[![CI](https://github.com/Lingrui98/dsh-research-hub/actions/workflows/ci.yml/badge.svg)](https://github.com/Lingrui98/dsh-research-hub/actions/workflows/ci.yml)
-[![dsh-xray: capability card](https://img.shields.io/endpoint?url=https://unstone.github.io/dsh-xray/badge/Lingrui98__dsh-research-hub.json)](https://unstone.github.io/dsh-xray/registry.html)
+[![Release](https://img.shields.io/github/v/release/Lingrui98/dsh-project-inbox)](https://github.com/Lingrui98/dsh-project-inbox/releases/latest)
+[![CI](https://github.com/Lingrui98/dsh-project-inbox/actions/workflows/ci.yml/badge.svg)](https://github.com/Lingrui98/dsh-project-inbox/actions/workflows/ci.yml)
+[![dsh-xray: capability card](https://img.shields.io/endpoint?url=https://unstone.github.io/dsh-xray/badge/Lingrui98__dsh-project-inbox.json)](https://unstone.github.io/dsh-xray/registry.html)
 [![License: BSD-3-Clause](https://img.shields.io/badge/license-BSD--3--Clause-blue)](LICENSE)
 
 **把散落在几十个会话里的问题、结果和中断，收进一个能直接处理的项目工作台。**
 
-DSH 擅长一次把一件事做好，但不擅长同时管很多件事。会话一多，问题卡在某个窗口里等你回答，结果散落在不同会话，任务失败了你也未必知道。Research Hub 在 DSH 之上加一层项目视图：自动把会话归到项目，把需要你处理的事集中到一个收件箱，并让你原地处理完，不必来回切换。
+DSH 擅长一次把一件事做好，但不擅长同时管很多件事。会话一多，问题卡在某个窗口里等你回答，结果散落在不同会话，任务失败了你也未必知道。Project Inbox 在 DSH 之上加一层项目视图：自动把会话归到项目，把需要你处理的事集中到一个收件箱，并让你原地处理完，不必来回切换。
 
-> 独立第三方插件，不是 DeepSeek 官方产品。当前版本 **v0.2.0**，已在 **DSH 0.2.0-rc.2 Web profile** 验证。
+> 独立第三方插件，不是 DeepSeek 官方产品。当前版本 **v0.3.0**，已在 **DSH 0.2.0-rc.2 Web profile** 验证。
 
-![Research Hub 面板：跨会话收件箱与项目总览](docs/assets/social-preview.png)
+![Project Inbox 面板：跨会话收件箱与项目总览](docs/assets/social-preview.png)
 
 ## 它解决什么问题
 
@@ -37,9 +37,9 @@ DSH 擅长一次把一件事做好，但不擅长同时管很多件事。会话�
 
 ## 和别的插件有什么不同
 
-DSH 生态里已经有不少会话管理器和提醒插件，它们各自解决一小块。Research Hub 的定位是"项目级收件箱"：
+DSH 生态里已经有不少会话管理器和提醒插件，它们各自解决一小块。Project Inbox 的定位是"项目级收件箱"：
 
-| | 会话管理器类 | 通知类 | Research Hub |
+| | 会话管理器类 | 通知类 | Project Inbox |
 | --- | --- | --- | --- |
 | 主要用途 | 整理、归档、删除会话 | 把提醒推到屏幕/手机 | 收拢需要你处理的跨会话事项 |
 | 是否汇总待办 | 否 | 只是弹一下 | 是，持久保存并可处理 |
@@ -51,10 +51,10 @@ DSH 生态里已经有不少会话管理器和提醒插件，它们各自解决�
 
 ### 1. 安装
 
-从 [Releases](https://github.com/Lingrui98/dsh-research-hub/releases/latest) 下载安装包，在 DSH 的插件管理界面选择本地文件安装并启用；或者用 CLI：
+从 [Releases](https://github.com/Lingrui98/dsh-project-inbox/releases/latest) 下载安装包，在 DSH 的插件管理界面选择本地文件安装并启用；或者用 CLI：
 
 ```bash
-dsh plugin --profile web add /absolute/path/to/dsh-external-dsh-research-hub-0.2.0.tgz
+dsh plugin --profile web add /absolute/path/to/dsh-external-dsh-project-inbox-0.3.0.tgz
 ```
 
 安装包已包含编译产物，不需要自行构建。校验方式：
@@ -68,8 +68,8 @@ sha256sum -c SHA256SUMS
 最省事的方式是指定一个项目根目录，插件会把它下面的项目目录登记为项目：
 
 ```yaml
-- id: dsh-research-hub
-  name: '@dsh-external/dsh-research-hub'
+- id: dsh-project-inbox
+  name: '@dsh-external/dsh-project-inbox'
   config:
     projectsRoots:
       - /path/to/projects
@@ -137,7 +137,7 @@ curl -fsS -X POST http://127.0.0.1:9999/rhub/api/post \
 - 数据默认保存在本机 profile 目录的 JSON 文件里，不上传，无遥测。
 - 外部投递默认关闭；开启后只接受带 token 的请求，任何时刻都可以关掉。
 - 导出/导入是本地接口，用于备份与迁移。
-- 删除插件前建议先导出或备份 `research-hub.json`。
+- 删除插件前建议先导出或备份 `research-hub.json`（文件名沿用历史命名，改名后保持不变）。
 
 ## 兼容性与边界
 
@@ -151,8 +151,8 @@ curl -fsS -X POST http://127.0.0.1:9999/rhub/api/post \
 需要 Node.js 24、npm、bash 和已安装的 DSH：
 
 ```bash
-git clone https://github.com/Lingrui98/dsh-research-hub.git
-cd dsh-research-hub
+git clone https://github.com/Lingrui98/dsh-project-inbox.git
+cd dsh-project-inbox
 npm ci --legacy-peer-deps --ignore-scripts
 npm run build && npm run build:client
 npm test

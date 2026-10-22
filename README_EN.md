@@ -1,19 +1,19 @@
-# DSH Research Hub · Project Workbench
+# DSH Project Inbox
 
 [中文](README.md) | English
 
-[![Release](https://img.shields.io/github/v/release/Lingrui98/dsh-research-hub)](https://github.com/Lingrui98/dsh-research-hub/releases/latest)
-[![CI](https://github.com/Lingrui98/dsh-research-hub/actions/workflows/ci.yml/badge.svg)](https://github.com/Lingrui98/dsh-research-hub/actions/workflows/ci.yml)
-[![dsh-xray: capability card](https://img.shields.io/endpoint?url=https://unstone.github.io/dsh-xray/badge/Lingrui98__dsh-research-hub.json)](https://unstone.github.io/dsh-xray/registry.html)
+[![Release](https://img.shields.io/github/v/release/Lingrui98/dsh-project-inbox)](https://github.com/Lingrui98/dsh-project-inbox/releases/latest)
+[![CI](https://github.com/Lingrui98/dsh-project-inbox/actions/workflows/ci.yml/badge.svg)](https://github.com/Lingrui98/dsh-project-inbox/actions/workflows/ci.yml)
+[![dsh-xray: capability card](https://img.shields.io/endpoint?url=https://unstone.github.io/dsh-xray/badge/Lingrui98__dsh-project-inbox.json)](https://unstone.github.io/dsh-xray/registry.html)
 [![License: BSD-3-Clause](https://img.shields.io/badge/license-BSD--3--Clause-blue)](LICENSE)
 
 **One project inbox for DeepSeek Harness: collect the questions, deliverables and interrupted turns scattered across dozens of sessions, and act on them in place.**
 
-DeepSeek Harness is great at getting one thing done, but not at keeping track of many things at once. Once sessions pile up, questions wait in a window you are not looking at, results end up in different places, and a failed turn may go unnoticed. Research Hub adds a project view on top of DSH: sessions are attributed to projects automatically, everything that needs you lands in one inbox, and you handle it without switching tabs.
+DeepSeek Harness is great at getting one thing done, but not at keeping track of many things at once. Once sessions pile up, questions wait in a window you are not looking at, results end up in different places, and a failed turn may go unnoticed. Project Inbox adds a project view on top of DSH: sessions are attributed to projects automatically, everything that needs you lands in one inbox, and you handle it without switching tabs.
 
-> An independent third-party plugin, not an official DeepSeek product. Current version **v0.2.0**, verified on **DSH 0.2.0-rc.2 Web profile**.
+> An independent third-party plugin, not an official DeepSeek product. Current version **v0.3.0**, verified on **DSH 0.2.0-rc.2 Web profile**.
 
-![Research Hub panel: cross-session inbox and project overview](docs/assets/social-preview.png)
+![Project Inbox panel: cross-session inbox and project overview](docs/assets/social-preview.png)
 
 ## Why it exists
 
@@ -37,9 +37,9 @@ DeepSeek Harness is great at getting one thing done, but not at keeping track of
 
 ## How it differs
 
-The DSH ecosystem already has session managers and notification plugins, each solving a slice. Research Hub is positioned as a *project inbox*:
+The DSH ecosystem already has session managers and notification plugins, each solving a slice. Project Inbox is positioned as a *project inbox*:
 
-| | Session managers | Notifications | Research Hub |
+| | Session managers | Notifications | Project Inbox |
 | --- | --- | --- | --- |
 | Main job | Tidy, archive, delete sessions | Ping your screen or phone | Collect cross-session work that needs you |
 | Aggregates pending work | No | Momentary reminder | Yes, persisted and actionable |
@@ -51,10 +51,10 @@ The DSH ecosystem already has session managers and notification plugins, each so
 
 ### 1. Install
 
-Download the tarball from [Releases](https://github.com/Lingrui98/dsh-research-hub/releases/latest) and install it from the DSH plugin manager, or use the CLI:
+Download the tarball from [Releases](https://github.com/Lingrui98/dsh-project-inbox/releases/latest) and install it from the DSH plugin manager, or use the CLI:
 
 ```bash
-dsh plugin --profile web add /absolute/path/to/dsh-external-dsh-research-hub-0.2.0.tgz
+dsh plugin --profile web add /absolute/path/to/dsh-external-dsh-project-inbox-0.3.0.tgz
 ```
 
 The package ships prebuilt; no build step is needed. To verify:
@@ -68,8 +68,8 @@ sha256sum -c SHA256SUMS
 The simplest setup is to give it a project root; its project directories become projects:
 
 ```yaml
-- id: dsh-research-hub
-  name: '@dsh-external/dsh-research-hub'
+- id: dsh-project-inbox
+  name: '@dsh-external/dsh-project-inbox'
   config:
     projectsRoots:
       - /path/to/projects
@@ -137,7 +137,7 @@ Push inbox events to your service (signed requests, retries, private addresses r
 - Data lives in a JSON file inside your local DSH profile; nothing is uploaded and there is no telemetry.
 - External posting is off by default; when enabled it only accepts requests carrying a token and can be turned off at any time.
 - Export and import are local endpoints for backup and migration.
-- Export or back up `research-hub.json` before uninstalling.
+- Export or back up `research-hub.json` before uninstalling (the file name keeps its historical name after the rename).
 
 ## Compatibility and limits
 
@@ -151,8 +151,8 @@ Push inbox events to your service (signed requests, retries, private addresses r
 Requires Node.js 24, npm, bash and an installed DSH:
 
 ```bash
-git clone https://github.com/Lingrui98/dsh-research-hub.git
-cd dsh-research-hub
+git clone https://github.com/Lingrui98/dsh-project-inbox.git
+cd dsh-project-inbox
 npm ci --legacy-peer-deps --ignore-scripts
 npm run build && npm run build:client
 npm test

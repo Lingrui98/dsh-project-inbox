@@ -1,5 +1,5 @@
 /**
- * @dsh-external/dsh-research-hub — client 侧文案字典（zh / en）。
+ * @dsh-external/dsh-project-inbox — client 侧文案字典（zh / en）。
  *
  * - zh 字典的每条文案与 0.1.4 逐字一致，现有中文用户零感知。
  * - en 字典覆盖全部键；插值文案用函数表达，两种语言的参数形状一致。
@@ -157,10 +157,10 @@ export const zh: HubStrings = {
   agoDays: (n) => `${n} 天前`,
   requestFailed: (status) => `请求失败（${status}）`,
 
-  loading: '正在加载指挥中心…',
+  loading: '正在加载收件箱…',
   retry: '重试',
   back: '← 返回',
-  hubName: '指挥中心',
+  hubName: '项目收件箱',
 
   jumpToSessionTitle: (sessionId) => `跳转会话 ${sessionId}`,
   jumpToSession: '跳转会话',
@@ -197,7 +197,7 @@ export const zh: HubStrings = {
   answerPrefix: (text) => `答复：${text}`,
 
   newProjectPromptBind: '新项目名称（将创建并把该会话归入）：',
-  trashTitle: '扫入回收站（指挥中心内隐藏，可在回收站恢复）',
+  trashTitle: '扫入回收站（收件箱内隐藏，可在回收站恢复）',
   trashAriaLabel: (sessionLabel) => `将会话移入回收站：${sessionLabel}`,
   suggestTitle: '按会话标题推断的建议项目，点击归入',
   suggestChip: (projectName) => `建议：${projectName}`,
@@ -238,8 +238,8 @@ export const zh: HubStrings = {
 
   pageTitleAll: '全部待处理',
   pageTitleTrash: '回收站',
-  eyebrowHome: '研究工作台',
-  eyebrowDetail: '指挥中心 / 项目与消息',
+  eyebrowHome: '项目收件箱',
+  eyebrowDetail: '收件箱 / 项目与消息',
   syncFailTitle: '自动刷新失败，仍显示上次成功数据',
   syncOkTitle: '每 8 秒自动刷新',
   syncFailed: '更新失败',
@@ -282,8 +282,8 @@ export const zh: HubStrings = {
   jumpNotInCatalog: (sessionIdPrefix) => `提示：会话 ${sessionIdPrefix}… 不在当前客户端目录中，已尝试打开`,
   jumpFailed: (message) => `跳转失败：${message}`,
 
-  returnTitle: '回到指挥中心（保留你离开时的页面）',
-  returnLabel: '← 指挥中心',
+  returnTitle: '回到收件箱（保留你离开时的页面）',
+  returnLabel: '← 收件箱',
 }
 
 export const en: HubStrings = {
@@ -294,10 +294,10 @@ export const en: HubStrings = {
   agoDays: (n) => `${n}d ago`,
   requestFailed: (status) => `Request failed (${status})`,
 
-  loading: 'Loading the hub…',
+  loading: 'Loading the inbox…',
   retry: 'Retry',
   back: '← Back',
-  hubName: 'Hub',
+  hubName: 'Inbox',
 
   jumpToSessionTitle: (sessionId) => `Go to session ${sessionId}`,
   jumpToSession: 'Go to session',
@@ -334,7 +334,7 @@ export const en: HubStrings = {
   answerPrefix: (text) => `Answer: ${text}`,
 
   newProjectPromptBind: 'New project name (it will be created and this session assigned to it):',
-  trashTitle: 'Sweep into trash (hidden in the hub; restorable from the trash)',
+  trashTitle: 'Sweep into trash (hidden in the inbox; restorable from the trash)',
   trashAriaLabel: (sessionLabel) => `Move session to trash: ${sessionLabel}`,
   suggestTitle: 'Suggested project inferred from the session title; click to assign',
   suggestChip: (projectName) => `Suggested: ${projectName}`,
@@ -375,8 +375,8 @@ export const en: HubStrings = {
 
   pageTitleAll: 'All pending',
   pageTitleTrash: 'Trash',
-  eyebrowHome: 'Research workbench',
-  eyebrowDetail: 'Hub / Projects & Messages',
+  eyebrowHome: 'Project inbox',
+  eyebrowDetail: 'Inbox / Projects & Messages',
   syncFailTitle: 'Auto-refresh failed; showing the last successful data',
   syncOkTitle: 'Auto-refreshes every 8 seconds',
   syncFailed: 'Update failed',
@@ -419,8 +419,8 @@ export const en: HubStrings = {
   jumpNotInCatalog: (sessionIdPrefix) => `Note: session ${sessionIdPrefix}… is not in this client's catalog; attempted to open it anyway`,
   jumpFailed: (message) => `Jump failed: ${message}`,
 
-  returnTitle: 'Back to the hub (your page is preserved)',
-  returnLabel: '← Hub',
+  returnTitle: 'Back to the inbox (your page is preserved)',
+  returnLabel: '← Inbox',
 }
 
 /** 已告警过的缺键，保证每个键只 console.warn 一次。 */

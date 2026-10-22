@@ -1,5 +1,5 @@
 /**
- * @dsh-external/dsh-research-hub — client 侧：指挥中心面板（卡片式）。
+ * @dsh-external/dsh-project-inbox — client 侧：指挥中心面板（卡片式）。
  *
  * 挂载点：
  * - sidebar.panellist：入口图标 + 待处理角标（轻量 badge 端点轮询）。

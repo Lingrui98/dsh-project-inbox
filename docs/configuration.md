@@ -3,8 +3,8 @@
 插件通过 profile patch 配置。所有字段都有默认值，不写配置时行为与推荐用法一致：
 
 ```yaml
-- id: dsh-research-hub
-  name: '@dsh-external/dsh-research-hub'
+- id: dsh-project-inbox
+  name: '@dsh-external/dsh-project-inbox'
   config: {}
 ```
 
@@ -121,7 +121,7 @@ curl -fsS -X POST http://127.0.0.1:9999/rhub/api/post \
 
 | 字段 | 默认值 | 说明 |
 | --- | --- | --- |
-| `storeFile` | profile 目录下的 `research-hub.json` | 数据文件位置 |
+| `storeFile` | profile 目录下的 `research-hub.json`（历史文件名，保持不变） | 数据文件位置 |
 | `storage.driver` | `json` | `json` 或 `sqlite` |
 | `storage.file` | 空 | 存储文件路径；空则沿用 `storeFile` |
 | `storage.migrateFrom` | 空 | 空 SQLite 库首次启动时从这个 JSON 文件导入一次 |

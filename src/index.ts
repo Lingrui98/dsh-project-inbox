@@ -1,5 +1,5 @@
 /**
- * @dsh-external/dsh-research-hub — host 侧：跨会话项目指挥中心。
+ * @dsh-external/dsh-project-inbox — host 侧：跨会话项目收件箱。
  *
  * 职责：
  * 1. 项目注册表：扫描项目根（含 paper.toml/.git 的子目录）+ 手动添加。
@@ -37,11 +37,11 @@ import { HubStore, type HubItem } from './host/store.js'
 import { createWebhookDispatcher, type WebhookEvent, type WebhookTarget } from './host/webhook.js'
 import { exportBundle, importBundle, PortabilityError } from './host/portability.js'
 
-export const name = '@dsh-external/dsh-research-hub'
+export const name = '@dsh-external/dsh-project-inbox'
 export const inject = ['tools', 'systemPrompt', 'webServer', 'sessionController', 'userQuestions', 'agents', 'sessionQuery', 'sessionProjections', 'timer', 'workspaceController']
 
 export const Config: Schema<any, ConfigShape> = z.object({
-  projectsRoot: z.string().default(process.env.DSH_RESEARCH_HUB_PROJECTS_ROOT || process.cwd()),
+  projectsRoot: z.string().default(process.env.DSH_PROJECT_INBOX_PROJECTS_ROOT || process.env.DSH_RESEARCH_HUB_PROJECTS_ROOT || process.cwd()),
   /** 固定项目发现范围：非空时替代 projectsRoot，项目不再随宿主启动目录变化。 */
   projectsRoots: z.array(z.string()).default([]),
   storeFile: z.string().default(''),

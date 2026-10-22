@@ -89,10 +89,10 @@ test('return button uses the displayed header session, never recency of retained
   ui.setReturnTarget({ sessionId: 'older-session' })
   const ctx = { get() { throw Error('Header identity must not be inferred from catalog or retain counts') } }
   assert.equal(ui.HubReturnBar({ ctx, sessionId: 'newer-session' }), null)
-  assert.match(text(ui.HubReturnBar({ ctx, sessionId: 'older-session' })), /指挥中心/)
+  assert.match(text(ui.HubReturnBar({ ctx, sessionId: 'older-session' })), /收件箱/)
   ui.setReturnTarget({ sessionId: 'second-session' })
   assert.equal(ui.HubReturnBar({ ctx, sessionId: 'older-session' }), null)
-  assert.match(text(ui.HubReturnBar({ ctx, sessionId: 'second-session' })), /指挥中心/)
+  assert.match(text(ui.HubReturnBar({ ctx, sessionId: 'second-session' })), /收件箱/)
 })
 
 test('return button selects the hub and clears the return target', () => {

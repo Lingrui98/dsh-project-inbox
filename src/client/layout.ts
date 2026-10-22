@@ -1,5 +1,5 @@
 /**
- * @dsh-external/dsh-research-hub — client 侧：面板布局配置（纯模块）。
+ * @dsh-external/dsh-project-inbox — client 侧：面板布局配置（纯模块）。
  *
  * 职责：
  * - 描述"全部待处理"视图的分区（LayoutSection）与整体布局（LayoutConfig）。

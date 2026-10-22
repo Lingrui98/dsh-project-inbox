@@ -1,11 +1,15 @@
 # Changelog
 
-## 未发布（0.3.0 方向）
+## 0.3.0
+
+更名：`dsh-research-hub` → `dsh-project-inbox`（项目收件箱 / Project Inbox）。仓库与安装包名随之变化；工具名 `hub_register` / `hub_post`、路由 `/rhub/api`、配置字段与数据文件 `research-hub.json` 保持不变。升级时卸载旧包、安装新包即可，数据文件无需迁移。
 
 - 存储后端可插拔：默认仍是 JSON（行为与 0.2.0 一致）；新增 `storage.driver = "sqlite"` 可选后端，懒加载 Node 24 内置 `node:sqlite`，失败自动降级 JSON；`storage.migrateFrom` 支持空库从旧 JSON 一次性导入。
-- 新增 `HUB_STORE` 关闭钩子：插件卸载/热重载时先落盘再释放 SQLite 句柄。
+- 插件卸载/热重载时关闭存储句柄，SQLite 后端不再占用句柄。
 - 新增导出/导入：`POST /rhub/api/export` 与 `POST /rhub/api/import`（merge 按 id 去重、现有优先；replace 整体替换但保留本机会话快照）；`src/host/portability.ts` 为纯模块。
+- 项目发现新增 `DSH_PROJECT_INBOX_PROJECTS_ROOT` 环境变量，兼容旧 `DSH_RESEARCH_HUB_PROJECTS_ROOT`。
 - 多 hub 实例本轮不做：当前路由 `/rhub/api` 与工具名固定，需要 loader 级实例隔离，留待后续。
+- 客户端品牌文案、README 与界面图同步改名。
 - 新增测试：`sqlite-store`、`portability` 与 export/import API 接线用例。
 
 ## 0.2.0
