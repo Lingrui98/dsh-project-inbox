@@ -4,7 +4,6 @@
 
 [![Release](https://img.shields.io/github/v/release/Lingrui98/dsh-project-inbox)](https://github.com/Lingrui98/dsh-project-inbox/releases/latest)
 [![CI](https://github.com/Lingrui98/dsh-project-inbox/actions/workflows/ci.yml/badge.svg)](https://github.com/Lingrui98/dsh-project-inbox/actions/workflows/ci.yml)
-[![dsh-xray: capability card](https://img.shields.io/endpoint?url=https://unstone.github.io/dsh-xray/badge/Lingrui98__dsh-project-inbox.json)](https://unstone.github.io/dsh-xray/registry.html)
 [![License: BSD-3-Clause](https://img.shields.io/badge/license-BSD--3--Clause-blue)](LICENSE)
 
 **One project inbox for DeepSeek Harness: collect the questions, deliverables and interrupted turns scattered across dozens of sessions, and act on them in place.**
