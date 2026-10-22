@@ -1,6 +1,6 @@
 # Changelog
 
-## 未发布（通用化 0.2.0 方向）
+## 0.2.0
 
 - 项目发现规则配置化：新增 `discovery.markers` / `maxDepth` / `stopWords` / `excludeDirs`，不再硬编码 `paper.toml`。不配置时行为与 0.1.4 完全一致。
 - 支持任意项目标记文件（如 `package.json`、`Cargo.toml`）与多层扫描；标记文件里的 `name`/`title` 作为项目显示名。
