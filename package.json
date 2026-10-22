@@ -1,6 +1,6 @@
 {
   "name": "dsh-project-inbox",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "description": "Project workbench for DeepSeek Harness: cross-session inbox, automatic project attribution, interruption alerts, and external delivery",
   "type": "module",
   "main": "./lib/index.js",

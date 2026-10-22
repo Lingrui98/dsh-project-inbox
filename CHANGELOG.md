@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.3.2
+
+- 修复客户端语言解析：文案改为首次渲染时读取 `<html lang>`，而不是模块求值阶段。
+  DSH 的 locale 客户端会在启动时按 profile 的 `locale.preference` 写入 `<html lang>`，
+  这时点晚于插件模块加载；此前偏好中文的用户会读到 `navigator.language` 而显示英文界面。
+- 语言跟随 DSH 的语言设置（`zh*` → 中文，其余 → 英文），缺省仍回退中文；切换语言后下次渲染即更新。
+- 新增回归测试：`document.lang` 优先于 `navigator.language`。
+
 ## 0.3.1
 
 - 发布到 npm：包名改为无 scope 的 `dsh-project-inbox`，可用 `dsh plugin --profile web add dsh-project-inbox` 安装，并进入 DSH 插件中心候选。

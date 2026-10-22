@@ -12,14 +12,33 @@ import React from 'react'
 import type { SlotsService } from '@deepseek-ai/dsh-client-ui-slots'
 import { HUB_CSS } from './styles.js'
 import { pickStrings } from './strings.js'
+import type { HubStrings } from './strings.js'
 import { assignItems, groupItems, normalizeLayout } from './layout.js'
 import type { LayoutSectionSource } from './layout.js'
 
 const h = React.createElement
 const PANEL_ID = 'research-hub'
 const API_BASE = '/rhub/api'
-// 模块级解析一次文案字典：locale 在面板生命周期内不变。
-const T = pickStrings()
+// 文案在首次访问时解析，而不是模块求值阶段：
+// DSH 的 locale 客户端会在启动时按 profile 的 locale.preference 写入 <html lang>，
+// 这个时点晚于本模块的顶层执行；顶层直接 pickStrings() 会读到 navigator.language，
+// 导致偏好中文的用户看到英文界面。缓存按 lang 失效，切换语言后下次渲染即更新。
+let localizedFor: string | null = null
+let localizedStrings: HubStrings | null = null
+function strings(): HubStrings {
+  const raw =
+    (typeof document !== 'undefined' ? document.documentElement?.lang : '') ||
+    (typeof navigator !== 'undefined' ? navigator.language : '') ||
+    'zh'
+  if (raw !== localizedFor || localizedStrings === null) {
+    localizedFor = raw
+    localizedStrings = pickStrings(raw)
+  }
+  return localizedStrings
+}
+const T: HubStrings = new Proxy({} as HubStrings, {
+  get: (_target, key) => strings()[key as keyof HubStrings],
+})
 
 // ── 跨面板状态（模块级）：指挥中心的当前视图 + 跳转后的返回目标 ──────────────
 // HubPage 卸载/重挂载时视图不丢；跳转会话后头部出现"返回指挥中心"按钮。

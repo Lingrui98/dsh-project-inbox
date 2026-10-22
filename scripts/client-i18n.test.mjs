@@ -6,7 +6,7 @@ import ts from 'typescript'
 
 // 与 client-home.test.mjs 相同的加载方式：transpile TS 后在 vm 里执行。
 // 提供 console 桩以统计 warn 次数；不提供 document/navigator（模拟 Node 环境）。
-function loadStrings(warnings) {
+function loadStrings(warnings, globals = {}) {
   const source = readFileSync(new URL('../src/client/strings.ts', import.meta.url), 'utf8')
   const { outputText } = ts.transpileModule(source, {
     compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2023, esModuleInterop: true },
@@ -16,6 +16,7 @@ function loadStrings(warnings) {
     exports,
     require: (name) => { throw new Error(`strings.ts 不应有依赖：${name}`) },
     console: { warn: (msg) => warnings.push(String(msg)), log() {}, error() {} },
+    ...globals,
   })
   return exports
 }
@@ -104,6 +105,18 @@ test('resolveLocale：en* 归 en，其余与缺省归 zh', () => {
   assert.equal(resolveLocale(), 'zh')
   assert.equal(resolveLocale(null), 'zh')
   assert.equal(resolveLocale(undefined), 'zh')
+})
+
+test('resolveLocale：document.lang 优先于 navigator.language，缺省回退 zh', () => {
+  const zhCtx = { document: { documentElement: { lang: 'zh-CN' } }, navigator: { language: 'en-US' } }
+  const zhMod = loadStrings([], zhCtx)
+  assert.equal(zhMod.resolveLocale(), 'zh')
+  assert.equal(zhMod.pickStrings().hubName, '项目收件箱')
+
+  const enCtx = { document: { documentElement: { lang: 'en-US' } }, navigator: { language: 'zh-CN' } }
+  const enMod = loadStrings([], enCtx)
+  assert.equal(enMod.resolveLocale(), 'en')
+  assert.equal(enMod.pickStrings().hubName, 'Inbox')
 })
 
 test('pickStrings：zh 原样返回，en 覆盖全部键', () => {

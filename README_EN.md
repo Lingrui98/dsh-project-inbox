@@ -141,6 +141,7 @@ Push inbox events to your service (signed requests, retries, private addresses r
 ## Data and privacy
 
 - Data lives in a JSON file inside your local DSH profile; nothing is uploaded and there is no telemetry.
+- The panel follows your DSH language setting (Chinese / English) and falls back to Chinese; refresh after changing it.
 - External posting is off by default; when enabled it only accepts requests carrying a token and can be turned off at any time.
 - Export and import are local endpoints for backup and migration.
 - Export or back up `research-hub.json` before uninstalling (the file name keeps its historical name after the rename).
