@@ -85,6 +85,7 @@ GitHub 源码快照不含 `lib/`，不能替代 Release 安装包。当前未发
 | `view` | 空（默认布局） | 面板布局：`sections`、`groupBy`（`project`/`kind`/`priority`/`none`）、`defaultSection` |
 | `webhooks` | `[]` | 出站事件：`url`、`events`、`secret`、`headers`、`timeoutMs`、`retries`；默认拒绝私网地址 |
 | `webhookAllowPrivate` | `false` | 允许 webhook 指向私网/回环地址（本地联调时才开） |
+| `storage` | JSON | 存储后端：`driver`（`json` 默认，或 `sqlite`）、`file`（空则沿用 `storeFile`）、`migrateFrom`（空 SQLite 库从该 JSON 一次性导入） |
 
 推荐在 profile patch 里固定项目根目录，避免宿主从其他目录启动时丢失项目：
 
@@ -143,6 +144,32 @@ curl -fsS -X POST http://127.0.0.1:9999/rhub/api/post \
 ```
 
 请求头：`x-rhub-event`、`x-rhub-timestamp`、`x-rhub-signature: sha256=<hmac>`，签名内容为 `timestamp.body`。
+
+### 存储后端与导出导入
+
+默认仍是 JSON 单文件，行为与之前完全一致。收件箱很大或希望写入更稳时，可以切到 SQLite（Node 24 内置 `node:sqlite`，属实验特性，会有一次 ExperimentalWarning）：
+
+```yaml
+    storage:
+      driver: sqlite
+      file: ~/.dsh/profiles/web/research-hub.sqlite
+      # 可选：空库首次启动时从旧 JSON 导入
+      migrateFrom: ~/.dsh/profiles/web/research-hub.json
+```
+
+导出/导入用于备份与迁移（本机接口，仅回环可调用）：
+
+```bash
+# 导出（返回可移植的 bundle JSON）
+curl -fsS -X POST http://127.0.0.1:9999/rhub/api/export -d '{}' > rhub-backup.json
+
+# 导入：mode=merge（默认，按 id 去重、现有优先）或 replace（整体替换，保留本机会话快照）
+curl -fsS -X POST http://127.0.0.1:9999/rhub/api/import \
+  -H 'Content-Type: application/json' \
+  -d "{\"mode\":\"merge\",\"bundle\":$(cat rhub-backup.json)}"
+```
+
+导出内容包含项目、会话绑定、收件箱条目与去重/扫描记录，不包含本机会话列表快照。
 
 插件会将每个根目录本身登记为项目，并按 `discovery.markers` 扫描子目录（默认含 `paper.toml` 或 `.git`）。标记文件里的 `name`/`title` 会作为项目显示名。也可以在界面新建项目。插件不包含作者个人项目注册表、会话记录或机器路径。
 

@@ -158,6 +158,49 @@ test('webhook 接线：hub_post 建条后发出签名事件，panel 透传 layou
   }
 })
 
+test('export/import API：导出可移植包、merge 幂等、非法包返回 400', async () => {
+  const temp = mkdtempSync(join(tmpdir(), 'rhub-portability-api-'))
+  const fake = makeFakeCtx([{ sessionId: SID, title: '接线会话', running: false, updatedAt: Date.now() }])
+  try {
+    apply(fake.ctx, baseConfig(join(temp, 'store.json'), temp))
+    const handler = fake.webServers[0]?.handler
+    assert.ok(handler, '应注册 /rhub/api 路由')
+
+    const exported = await callApi(handler, 'export', {})
+    assert.equal(exported.status, 200)
+    const bundle = exported.json.value.bundle
+    assert.equal(bundle.meta.schema, 1)
+    assert.ok(Array.isArray(bundle.data.items))
+    assert.ok(Array.isArray(bundle.data.projects))
+
+    // 自己的包再 merge 进来应当是幂等的：没有新增条目
+    const merged = await callApi(handler, 'import', { bundle, mode: 'merge' })
+    assert.equal(merged.status, 200)
+    assert.equal(merged.json.value.mode, 'merge')
+    assert.equal(merged.json.value.stats.addedItems, 0)
+    assert.equal(merged.json.value.stats.addedProjects, 0)
+
+    // 非法包被拒绝，错误码透出到 API 层（缺 meta 与 schema 不符分别对应不同 code）
+    const noMeta = await callApi(handler, 'import', { bundle: {} })
+    assert.equal(noMeta.status, 400)
+    assert.equal(noMeta.json.error.code, 'invalid-meta')
+    const badSchema = await callApi(handler, 'import', {
+      bundle: { meta: { schema: 99, exportedAt: Date.now() }, data: { projects: [], bindings: {}, items: [] } },
+    })
+    assert.equal(badSchema.status, 400)
+    assert.equal(badSchema.json.error.code, 'invalid-schema')
+  } finally {
+    for (const dispose of [...fake.effects].reverse()) {
+      try {
+        dispose()
+      } catch {
+        /* 忽略 */
+      }
+    }
+    rmSync(temp, { recursive: true, force: true })
+  }
+})
+
 test('默认配置：无 webhook 目标时不发请求，layout 为空对象', async () => {
   const temp = mkdtempSync(join(tmpdir(), 'rhub-wiring-default-'))
   const fake = makeFakeCtx([{ sessionId: SID, title: '接线会话', running: false, updatedAt: Date.now() }])

@@ -1,5 +1,13 @@
 # Changelog
 
+## 未发布（0.3.0 方向）
+
+- 存储后端可插拔：默认仍是 JSON（行为与 0.2.0 一致）；新增 `storage.driver = "sqlite"` 可选后端，懒加载 Node 24 内置 `node:sqlite`，失败自动降级 JSON；`storage.migrateFrom` 支持空库从旧 JSON 一次性导入。
+- 新增 `HUB_STORE` 关闭钩子：插件卸载/热重载时先落盘再释放 SQLite 句柄。
+- 新增导出/导入：`POST /rhub/api/export` 与 `POST /rhub/api/import`（merge 按 id 去重、现有优先；replace 整体替换但保留本机会话快照）；`src/host/portability.ts` 为纯模块。
+- 多 hub 实例本轮不做：当前路由 `/rhub/api` 与工具名固定，需要 loader 级实例隔离，留待后续。
+- 新增测试：`sqlite-store`、`portability` 与 export/import API 接线用例。
+
 ## 0.2.0
 
 - 项目发现规则配置化：新增 `discovery.markers` / `maxDepth` / `stopWords` / `excludeDirs`，不再硬编码 `paper.toml`。不配置时行为与 0.1.4 完全一致。

@@ -34,7 +34,7 @@
     "build": "bash scripts/build.sh",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "build:client": "tsdown",
-    "test": "node --test scripts/client-home.test.mjs scripts/client-i18n.test.mjs scripts/client-layout.test.mjs scripts/auq-mirror.test.mjs scripts/turn-alert.test.mjs scripts/auto-trash.test.mjs scripts/panel-perf.test.mjs scripts/discovery.test.mjs scripts/store-migration.test.mjs scripts/ingest-api.test.mjs scripts/webhook.test.mjs scripts/phase2-wiring.test.mjs",
+    "test": "node --test scripts/client-home.test.mjs scripts/client-i18n.test.mjs scripts/client-layout.test.mjs scripts/auq-mirror.test.mjs scripts/turn-alert.test.mjs scripts/auto-trash.test.mjs scripts/panel-perf.test.mjs scripts/discovery.test.mjs scripts/store-migration.test.mjs scripts/ingest-api.test.mjs scripts/webhook.test.mjs scripts/phase2-wiring.test.mjs scripts/sqlite-store.test.mjs scripts/portability.test.mjs",
     "test:package": "node --test scripts/package.test.mjs",
     "check:release": "npm run build && npm run build:client && npm test && npm run test:package"
   },

@@ -1,9 +1,9 @@
 /**
  * research-hub 持久化存储：项目注册表、会话绑定、收件箱消息。
- * JSON 单文件，防抖原子写（tmp + rename）。损坏时从空开始，原文件保留。
+ * HubStore 是适配器门面：默认 JsonStorageAdapter（原子写 tmp+rename、损坏保留原文件、
+ * v1→v2 迁移与备份），可选 SqliteStorageAdapter；实现见 ./storage.js。
  */
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
-import { dirname } from 'node:path'
+import { createStorageAdapter, type StorageAdapter, type StorageConfig } from './storage.js'
 
 export interface Project {
   id: string
@@ -162,35 +162,21 @@ export interface StoreData {
   ingestKeys?: Record<string, { itemId: string; at: number }>
 }
 
+export interface HubStoreOptions {
+  /** 存储后端；缺省（或 driver=json）与 0.2.0 的单文件 JSON 行为完全一致。 */
+  storage?: StorageConfig
+}
+
 export class HubStore {
   data: StoreData = { version: 2, projects: [], bindings: {}, items: [] }
   private timer: ReturnType<typeof setTimeout> | null = null
+  private readonly adapter: StorageAdapter
 
-  constructor(readonly file: string) {
+  constructor(readonly file: string, options?: HubStoreOptions) {
+    this.adapter = createStorageAdapter(file, options?.storage)
     try {
-      let migrated = false
-      if (existsSync(file)) {
-        const raw = readFileSync(file, 'utf8')
-        const parsed = JSON.parse(raw) as StoreData
-        if (
-          parsed
-          && (parsed.version === 1 || parsed.version === 2)
-          && Array.isArray(parsed.projects)
-          && Array.isArray(parsed.items)
-        ) {
-          if (parsed.version === 1) {
-            // v1 → v2 幂等迁移：先备份原始字节，再补默认 kinds，其余原样，最后写回 v2。
-            // 备份失败会进 catch：不写回，原文件保持 v1，下次加载重试。
-            writeFileSync(file + '.v1.bak', raw)
-            parsed.version = 2
-            if (!parsed.kinds || typeof parsed.kinds !== 'object') {
-              parsed.kinds = Object.fromEntries(Object.entries(DEFAULT_KINDS).map(([k, v]) => [k, { ...v }]))
-            }
-            migrated = true
-          }
-          this.data = parsed
-        }
-      }
+      const loaded = this.adapter.load()
+      if (loaded) this.data = loaded
       if (!this.data.titles) this.data.titles = {}
       if (!this.data.trashed) this.data.trashed = {}
       if (!this.data.alertKeys) this.data.alertKeys = {}
@@ -201,9 +187,8 @@ export class HubStore {
       if (!this.data.inferred) this.data.inferred = {}
       if (!this.data.auqScans) this.data.auqScans = {}
       if (!this.data.ingestKeys) this.data.ingestKeys = {}
-      if (migrated) this.flush()
     } catch {
-      /* 读取失败从空开始；原文件不覆盖，下次 flush 才替换 */
+      /* 读取失败从空开始；原数据不覆盖，下次 flush 才替换 */
     }
   }
 
@@ -218,12 +203,23 @@ export class HubStore {
 
   flush(): void {
     try {
-      mkdirSync(dirname(this.file), { recursive: true })
-      const tmp = this.file + '.tmp'
-      writeFileSync(tmp, JSON.stringify(this.data))
-      renameSync(tmp, this.file)
+      this.adapter.save(this.data)
     } catch {
       /* 写盘失败静默，下一次 touch 再试 */
+    }
+  }
+
+  /** 先把防抖中的数据落盘，再释放底层资源（sqlite 句柄）；插件卸载时调用。 */
+  close(): void {
+    if (this.timer) {
+      clearTimeout(this.timer)
+      this.timer = null
+      this.flush()
+    }
+    try {
+      this.adapter.close()
+    } catch {
+      /* 关闭失败静默 */
     }
   }
 }

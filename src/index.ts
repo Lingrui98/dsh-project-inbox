@@ -35,6 +35,7 @@ import {
 } from './host/discovery.js'
 import { HubStore, type HubItem } from './host/store.js'
 import { createWebhookDispatcher, type WebhookEvent, type WebhookTarget } from './host/webhook.js'
+import { exportBundle, importBundle, PortabilityError } from './host/portability.js'
 
 export const name = '@dsh-external/dsh-research-hub'
 export const inject = ['tools', 'systemPrompt', 'webServer', 'sessionController', 'userQuestions', 'agents', 'sessionQuery', 'sessionProjections', 'timer', 'workspaceController']
@@ -44,6 +45,18 @@ export const Config: Schema<any, ConfigShape> = z.object({
   /** 固定项目发现范围：非空时替代 projectsRoot，项目不再随宿主启动目录变化。 */
   projectsRoots: z.array(z.string()).default([]),
   storeFile: z.string().default(''),
+  /**
+   * 存储后端：json（默认，单文件，行为与 0.2.0 一致）| sqlite（node:sqlite 单行表）。
+   * file 为空沿用 storeFile；migrateFrom 用于空 SQLite 库从该 JSON 文件一次性导入。
+   */
+  storage: z.object({
+    /** json | sqlite；未知值按 json 处理并告警。 */
+    driver: z.string().default('json'),
+    /** sqlite 库文件路径；空则沿用 storeFile。 */
+    file: z.string().default(''),
+    /** 空 SQLite 库从该 JSON 文件一次性导入；仅 driver=sqlite 时生效。 */
+    migrateFrom: z.string().default(''),
+  }).default({}),
   /** 需要告警的 turn/end 原因标记，见 DEFAULT_ALERT_KINDS。 */
   alertKinds: z.array(z.string()).default([...DEFAULT_ALERT_KINDS]),
   /** 冷读回填只回看最近多少小时的会话日志。 */
@@ -128,6 +141,8 @@ interface ConfigShape {
   projectsRoot: string
   projectsRoots: string[]
   storeFile: string
+  /** 存储后端配置；缺省为 JSON 单文件。 */
+  storage: { driver: string; file: string; migrateFrom: string }
   alertKinds: string[]
   alertBackfillHours: number
   alertInterruptedGraceMinutes: number
@@ -705,7 +720,11 @@ export function apply(ctx: AppContext, config: ConfigShape): void {
   const dshHome = process.env.DSH_HOME || join(homedir(), '.dsh')
   const profileDir = process.env.DSH_PROFILE_DIR || join(dshHome, 'profiles', 'web')
   const storeFile = config.storeFile || join(profileDir, 'research-hub.json')
-  const store = new HubStore(storeFile)
+  const storageDriver = config.storage?.driver ?? 'json'
+  if (storageDriver !== 'json' && storageDriver !== 'sqlite') {
+    ctx.logger?.warn?.(`[research-hub] 未知 storage.driver=${storageDriver}，按 json 处理`)
+  }
+  const store = new HubStore(storeFile, { storage: config.storage })
   const services: HubServices = {
     sessionController: ctx.sessionController,
     sessionQuery: ctx.sessionQuery,
@@ -1198,6 +1217,28 @@ export function apply(ctx: AppContext, config: ConfigShape): void {
       void sweepProgrammaticSessions(hub, ctx, config, sweepState)
       return buildPanel(hub, ctx, config, alertState)
     },
+    /** 导出可移植数据：项目、绑定、收件箱与去重记录；不含本机会话快照。 */
+    export() {
+      const { bundle, stats } = exportBundle(store.data, { app: 'dsh-research-hub' })
+      return { bundle, stats }
+    },
+    /**
+     * 导入可移植数据：mode=merge（默认，现有优先去重）或 replace（整体替换，
+     * 保留本机会话快照）。显式操作，写盘后清缓存。
+     */
+    import(payload) {
+      const mode = payload?.mode === 'replace' ? 'replace' : 'merge'
+      try {
+        const result = importBundle(store.data, payload?.bundle, { mode })
+        store.data = result.data
+        store.flush()
+        hub.invalidateCaches()
+        return { mode, stats: result.stats, warnings: result.warnings }
+      } catch (error) {
+        if (error instanceof PortabilityError) throw new ApiError(error.code, error.message)
+        throw error
+      }
+    },
   }
 
   // 外部投递入口：只在 enabled 且 token 就绪时注册；否则与未知方法一样 404。
@@ -1298,6 +1339,9 @@ export function apply(ctx: AppContext, config: ConfigShape): void {
       }
     },
   } as any), 'research-hub: /rhub/api routes')
+
+  // 卸载时先落盘防抖中的数据并释放存储句柄（sqlite 需要显式 close）
+  ctx.effect(() => () => store.close(), 'research-hub: close store')
 
   ctx.logger?.info?.('[research-hub] 指挥中心已启动，存储：' + storeFile + '，项目根：' + hubRoots.join(', '))
 }
