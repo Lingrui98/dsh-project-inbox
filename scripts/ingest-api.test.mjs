@@ -253,14 +253,14 @@ test('项目归属：未知 project 返回 400 并列出可用项目，别名可
   process.env[TOKEN_ENV] = TOKEN
   const { handler, teardown } = setup(ingestOn())
   try {
-    await callApi(handler, 'addProject', { name: 'papers', aliases: ['论文'] })
+    await callApi(handler, 'addProject', { name: 'demo-project', aliases: ['演示项目'] })
     const bad = await callApi(handler, 'post', { type: 'deliverable', title: 'x', project: 'no-such-project' }, auth)
     assert.equal(bad.status, 400)
-    assert.match(bad.json.error.message, /papers/, '错误信息应列出可用项目')
+    assert.match(bad.json.error.message, /demo-project/, '错误信息应列出可用项目')
 
-    const ok = await callApi(handler, 'post', { type: 'deliverable', title: 'x', project: '论文' }, auth)
+    const ok = await callApi(handler, 'post', { type: 'deliverable', title: 'x', project: '演示项目' }, auth)
     assert.equal(ok.status, 200)
-    assert.equal(ok.json.value.projectId, 'papers')
+    assert.equal(ok.json.value.projectId, 'demo-project')
   } finally {
     await teardown()
   }

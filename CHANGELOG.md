@@ -10,7 +10,7 @@
 
 ## 0.2.0
 
-- 项目发现规则配置化：新增 `discovery.markers` / `maxDepth` / `stopWords` / `excludeDirs`，不再硬编码 `paper.toml`。不配置时行为与 0.1.4 完全一致。
+- 项目发现规则配置化：新增 `discovery.markers` / `maxDepth` / `stopWords` / `excludeDirs`，不再硬编码单一项目标记文件（默认仍兼容 `paper.toml` 与 `.git`）。不配置时行为与 0.1.4 完全一致。
 - 支持任意项目标记文件（如 `package.json`、`Cargo.toml`）与多层扫描；标记文件里的 `name`/`title` 作为项目显示名。
 - 消息类型改为注册表：新增 `kinds` 配置，内置 `question`/`deliverable`/`alert`，可新增自定义类型并配置 `label`、`action`、`postable`。内置 `alert` 由宿主产生，默认不可经 `hub_post` 投递。
 - store 升级到 v2：加载 v1 文件时先备份 `<store>.v1.bak`，补默认 kinds 后幂等迁移；v2 不重复迁移。

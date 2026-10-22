@@ -17,7 +17,7 @@ const now = Date.now()
 const counts = { questions: 0, deliverables: 0, urgent: 0 }
 const sessions = [1, 2, 3, 4].map((n) => ({ id: `session-${n}`, title: `最近会话 ${n}：长期实验状态与结果核查，这是一个较长的会话标题`, updatedAt: now - n * 60000, running: n === 2 }))
 const projects = [
-  { id: 'p', name: '示例研究项目 LongName', sessions, counts },
+  { id: 'p', name: '示例项目 LongName', sessions, counts },
   { id: 'q', name: '空项目', sessions: [], counts },
   { id: 'r', name: '另一个项目', sessions: sessions.slice(1), counts },
   ...Array.from({ length: 7 }, (_, i) => ({ id: `extra-${i}`, name: `项目 ${i}`, sessions: sessions.slice(0, i % 4), counts })),
@@ -82,7 +82,7 @@ try {
         await page.getByRole('region', { name: '收件箱', exact: true }).waitFor()
         const inbox = page.getByRole('region', { name: '收件箱', exact: true })
         assert.match(await inbox.innerText(), state === 'empty' ? /当前没有待处理消息/ : /4 条待处理/)
-        assert.equal(await page.getByRole('group', { name: '示例研究项目 LongName', exact: true }).locator('button[title^="打开会话："]').count(), 3)
+        assert.equal(await page.getByRole('group', { name: '示例项目 LongName', exact: true }).locator('button[title^="打开会话："]').count(), 3)
         await page.locator('.rh-project-grid[data-masonry="ready"]').waitFor()
         const geometry = await page.evaluate(() => {
           const inbox = document.querySelector('section[aria-label="收件箱"]').getBoundingClientRect()
@@ -90,7 +90,7 @@ try {
           const cards = cardElements.map((n) => n.getBoundingClientRect())
           const internalGaps = cardElements.flatMap((card) => [...card.children].slice(1).map((child, i) => child.getBoundingClientRect().top - card.children[i].getBoundingClientRect().bottom))
           const emptyHeight = document.querySelector('[role="group"][aria-label="空项目"]').getBoundingClientRect().height
-          const fullHeight = document.querySelector('[role="group"][aria-label="示例研究项目 LongName"]').getBoundingClientRect().height
+          const fullHeight = document.querySelector('[role="group"][aria-label="示例项目 LongName"]').getBoundingClientRect().height
           const overflow = [...document.querySelectorAll('*')].filter((n) => {
             const box = n.getBoundingClientRect()
             return box.width > 0 && (box.right > innerWidth + 1 || box.left < -1)
@@ -140,15 +140,15 @@ try {
           })
         }
         await page.screenshot({ path: `/tmp/rhub-home-${theme}-${width}-${state}.png`, fullPage: true })
-        const firstSession = page.getByRole('group', { name: '示例研究项目 LongName', exact: true }).locator('button[title^="打开会话："]').first()
+        const firstSession = page.getByRole('group', { name: '示例项目 LongName', exact: true }).locator('button[title^="打开会话："]').first()
         await firstSession.focus()
         assert.equal(await firstSession.evaluate((node) => getComputedStyle(node).outlineStyle), 'solid', 'Keyboard focus must be visible')
         await page.emulateMedia({ reducedMotion: 'reduce' })
-        await page.getByRole('group', { name: '示例研究项目 LongName', exact: true }).hover()
-        assert.equal(await page.getByRole('group', { name: '示例研究项目 LongName', exact: true }).evaluate((node) => getComputedStyle(node).transform), 'none', 'Reduced motion disables card lift')
+        await page.getByRole('group', { name: '示例项目 LongName', exact: true }).hover()
+        assert.equal(await page.getByRole('group', { name: '示例项目 LongName', exact: true }).evaluate((node) => getComputedStyle(node).transform), 'none', 'Reduced motion disables card lift')
         await page.emulateMedia({ reducedMotion: 'no-preference' })
         // Real DOM clicks must not trigger project navigation when opening a session.
-        const project = page.getByRole('group', { name: '示例研究项目 LongName', exact: true })
+        const project = page.getByRole('group', { name: '示例项目 LongName', exact: true })
         await project.locator('button[title^="打开会话："]').first().click()
         await page.waitForFunction(() => window.__events.some(([event]) => event === 'open'))
         assert.deepEqual(await page.evaluate(() => window.__events), [['retain', 'session-1'], ['open', 'session-1']])
