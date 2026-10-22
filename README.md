@@ -13,6 +13,8 @@ DSH 擅长一次把一件事做好，但不擅长同时管很多件事。会话�
 
 > 独立第三方插件，不是 DeepSeek 官方产品。当前版本 **v0.2.0**，已在 **DSH 0.2.0-rc.2 Web profile** 验证。
 
+![Research Hub 面板：跨会话收件箱与项目总览](docs/assets/social-preview.png)
+
 ## 它解决什么问题
 
 - **问题找不到你**：某个会话在等你回答提问，但你正在别的项目里干活，它就一直卡着。
@@ -30,6 +32,8 @@ DSH 擅长一次把一件事做好，但不擅长同时管很多件事。会话�
 | **打开就很快** | 首页读本地快照，常驻面板打开与轮询在毫秒级，不拖慢 DSH。 |
 | **能被外部调用** | CI、脚本、另一台机器可以通过接口投递结果；收件箱事件也能推送到你自己的服务。 |
 | **数据在本地** | 默认单文件存储，无遥测；可切换 SQLite，可随时导出备份、导入恢复。 |
+
+![收件箱与项目总览细节（全部为演示数据）](docs/assets/readme-detail.png)
 
 ## 和别的插件有什么不同
 
@@ -155,7 +159,7 @@ npm test
 npm run test:package
 ```
 
-社交预览图由真实客户端 bundle 加纯演示数据渲染生成（不读取真实收件箱）：
+README 里的界面图和社交预览图都由真实客户端 bundle 加纯演示数据渲染生成（不读取真实收件箱）：
 
 ```bash
 BROWSER_TEST_MODULE_ROOT=/path/to/package.json node scripts/social-preview.mjs

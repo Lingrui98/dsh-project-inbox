@@ -13,6 +13,8 @@ DeepSeek Harness is great at getting one thing done, but not at keeping track of
 
 > An independent third-party plugin, not an official DeepSeek product. Current version **v0.2.0**, verified on **DSH 0.2.0-rc.2 Web profile**.
 
+![Research Hub panel: cross-session inbox and project overview](docs/assets/social-preview.png)
+
 ## Why it exists
 
 - **Questions cannot find you.** A session is blocked waiting for an answer while you are working somewhere else.
@@ -30,6 +32,8 @@ DeepSeek Harness is great at getting one thing done, but not at keeping track of
 | **Opens instantly** | The panel renders from a local snapshot; opening it and polling stays in the millisecond range. |
 | **Callable from outside** | CI, scripts or another machine can post results in; inbox events can be pushed to your own service. |
 | **Your data stays local** | Single-file storage by default, no telemetry; switch to SQLite, and export/import any time. |
+
+![Inbox and project overview in detail (all demo data)](docs/assets/readme-detail.png)
 
 ## How it differs
 
@@ -155,7 +159,7 @@ npm test
 npm run test:package
 ```
 
-The social preview image is rendered from the shipped client bundle with fictional demo data (no real inbox is read):
+The screenshots and social preview are rendered from the shipped client bundle with fictional demo data (no real inbox is read):
 
 ```bash
 BROWSER_TEST_MODULE_ROOT=/path/to/package.json node scripts/social-preview.mjs
