@@ -1,6 +1,10 @@
 # DSH Research Hub · 项目工作台
 
+[English](README_EN.md) | 中文
+
 [![Release](https://img.shields.io/github/v/release/Lingrui98/dsh-research-hub)](https://github.com/Lingrui98/dsh-research-hub/releases/latest)
+[![CI](https://github.com/Lingrui98/dsh-research-hub/actions/workflows/ci.yml/badge.svg)](https://github.com/Lingrui98/dsh-research-hub/actions/workflows/ci.yml)
+[![dsh-xray: capability card](https://img.shields.io/endpoint?url=https://unstone.github.io/dsh-xray/badge/Lingrui98__dsh-research-hub.json)](https://unstone.github.io/dsh-xray/registry.html)
 [![License: BSD-3-Clause](https://img.shields.io/badge/license-BSD--3--Clause-blue)](LICENSE)
 
 **把散落在几十个会话里的问题、结果和中断，收进一个能直接处理的项目工作台。**
