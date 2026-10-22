@@ -155,6 +155,14 @@ npm test
 npm run test:package
 ```
 
+社交预览图由真实客户端 bundle 加纯演示数据渲染生成（不读取真实收件箱）：
+
+```bash
+BROWSER_TEST_MODULE_ROOT=/path/to/package.json node scripts/social-preview.mjs
+```
+
+需要先执行 `npm run build:client`，并准备一个含 `react`、`react-dom`、`esbuild`、`playwright-core` 的环境。
+
 ## License
 
 [BSD-3-Clause](LICENSE)。

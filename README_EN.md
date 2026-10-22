@@ -155,6 +155,14 @@ npm test
 npm run test:package
 ```
 
+The social preview image is rendered from the shipped client bundle with fictional demo data (no real inbox is read):
+
+```bash
+BROWSER_TEST_MODULE_ROOT=/path/to/package.json node scripts/social-preview.mjs
+```
+
+Run `npm run build:client` first and point it at a project with `react`, `react-dom`, `esbuild` and `playwright-core`.
+
 ## License
 
 [BSD-3-Clause](LICENSE).
