@@ -82,6 +82,16 @@ export interface Binding {
   updatedAt: number
 }
 
+/** 会话列表的一行快照：面板首页只用这些字段。 */
+export interface SessionSnapshot {
+  id: string
+  updatedAt: number
+  running: boolean
+  origin?: string
+  parentSessionId?: string
+  blank?: boolean
+}
+
 export interface StoreData {
   version: 1
   projects: Project[]
@@ -102,6 +112,21 @@ export interface StoreData {
   programmatic?: Record<string, boolean>
   /** 人工从回收站恢复过的会话：sessionId → 恢复时间。恢复视为长期豁免，不再自动回收。 */
   trashExempt?: Record<string, number>
+  /**
+   * 会话列表快照：面板首页读它立即渲染，后台再刷新。
+   * 宿主重启后第一帧不再等 sessionController.list（约 0.5-1.6s）。
+   */
+  sessions?: { at: number; items: SessionSnapshot[] }
+  /**
+   * 深度归因结论（标题 + 首条用户消息的匹配结果）。
+   * 标题不变时直接复用，插件重载或宿主重启后不再逐会话冷读日志。
+   */
+  inferred?: Record<string, { title: string; projectId: string | null; at: number }>
+  /**
+   * AUQ 镜像同步游标：sessionId → 已同步到的日志 updatedAt。
+   * 会话日志没有更新就跳过，不再每 30 秒全量重读。
+   */
+  auqScans?: Record<string, { at: number; updatedAt: number }>
 }
 
 export class HubStore {
@@ -122,6 +147,9 @@ export class HubStore {
       if (!this.data.alertScans) this.data.alertScans = {}
       if (!this.data.programmatic) this.data.programmatic = {}
       if (!this.data.trashExempt) this.data.trashExempt = {}
+      if (!this.data.sessions) this.data.sessions = { at: 0, items: [] }
+      if (!this.data.inferred) this.data.inferred = {}
+      if (!this.data.auqScans) this.data.auqScans = {}
     } catch {
       /* 读取失败从空开始；原文件不覆盖，下次 flush 才替换 */
     }

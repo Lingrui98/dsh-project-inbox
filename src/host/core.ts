@@ -5,7 +5,7 @@
 import { randomUUID } from 'node:crypto'
 import { existsSync, readdirSync, readFileSync } from 'node:fs'
 import { basename, join } from 'node:path'
-import type { AuqQuestionView, Binding, HubItem, HubStore, Project, TurnAlertKind, TurnAlertView } from './store.js'
+import type { AuqQuestionView, Binding, HubItem, HubStore, Project, SessionSnapshot, TurnAlertKind, TurnAlertView } from './store.js'
 
 /** 宿主服务的最小结构面（运行时已验证存在）。 */
 export interface HubServices {
@@ -550,8 +550,10 @@ export class Hub {
   /** 标题缓存：readTitleSnapshots 全量约 126ms/会话，面板轮询必须走缓存。持久化到 store。 */
   private titleCache = new Map<string, { title: string; at: number }>()
   private titleRefreshRunning = false
-  /** 会话列表缓存（sessionController.list 约 0.5s，轮询不重复拉）。 */
+  /** 会话列表缓存（sessionController.list 约 0.5-1.6s，轮询不重复拉）。 */
   private listCache: { at: number; items: any[] } | null = null
+  /** 会话列表刷新的单飞句柄：并发的面板与定时器共享同一次拉取。 */
+  private syncRunning: Promise<void> | null = null
   /** 子 agent → 父会话缓存。 */
   private parentCache = new Map<string, string | null>()
 
@@ -567,16 +569,68 @@ export class Hub {
     return undefined
   }
 
-  /** 会话列表（10 秒缓存）。 */
-  async listSessionsCached(): Promise<any[]> {
-    if (this.listCache && Date.now() - this.listCache.at < 10_000) return this.listCache.items
+  /**
+   * 面板首页用的会话快照（纯内存，零 IO）。
+   * 快照来自上一次后台刷新，持久化在 store 里，重启后第一帧也能立即渲染。
+   */
+  panelSessions(): SessionSnapshot[] {
+    return this.store.data.sessions?.items ?? []
+  }
+
+  /** 是否已有会话快照；没有说明是首次安装，面板需要阻塞拉一次列表。 */
+  hasSnapshot(): boolean {
+    return (this.store.data.sessions?.items.length ?? 0) > 0
+  }
+
+  /**
+   * 后台刷新会话列表快照：单飞 + 节流，绝不阻塞面板。
+   * 同时填充 listSessionsCached 的缓存，供回填与程序化扫描共用。
+   */
+  async syncSessions(force = false): Promise<void> {
+    if (this.syncRunning) return this.syncRunning
+    const snapshotAt = this.store.data.sessions?.at ?? 0
+    // 面板每 8 秒轮询一次；15 秒内不重复拉，足够新又不浪费。
+    if (!force && Date.now() - snapshotAt < 15_000) return
+    const task = (async () => {
+      try {
+        const listed = await this.services.sessionController.list({})
+        const items = listed?.items ?? []
+        this.listCache = { at: Date.now(), items }
+        const next: SessionSnapshot[] = []
+        for (const raw of items) {
+          const id = String(raw?.sessionId ?? raw?.id ?? '')
+          if (!id) continue
+          // 只存面板会展示的会话：子代理、子会话、空白会话永不出现在首页。
+          if (raw?.origin === 'subagent' || raw?.parentSessionId || raw?.blank) continue
+          next.push({
+            id,
+            updatedAt: Number(raw?.updatedAt) || 0,
+            running: Boolean(raw?.running),
+            ...(raw?.origin ? { origin: String(raw.origin) } : {}),
+          })
+        }
+        const previous = JSON.stringify(this.store.data.sessions?.items ?? [])
+        this.store.data.sessions = { at: Date.now(), items: next }
+        if (JSON.stringify(next) !== previous) this.store.touch()
+      } catch {
+        // 刷新失败保留上次快照；下一轮轮询再试。
+      }
+    })()
+    this.syncRunning = task
     try {
-      const listed = await this.services.sessionController.list({})
-      this.listCache = { at: Date.now(), items: listed?.items ?? [] }
-    } catch {
-      this.listCache = this.listCache ?? { at: Date.now(), items: [] }
+      await task
+    } finally {
+      if (this.syncRunning === task) this.syncRunning = null
     }
-    return this.listCache.items
+  }
+
+  /** 会话列表（30 秒缓存，单飞）：回填与程序化扫描用，面板首页不再走这里。 */
+  async listSessionsCached(): Promise<any[]> {
+    const cached = this.listCache
+    if (cached && Date.now() - cached.at < 30_000) return cached.items
+    // 内存里还没有列表（刚重载）时必须强制拉一次，不能只靠快照节流。
+    await this.syncSessions(cached === null)
+    return this.listCache?.items ?? []
   }
 
   /** 子 agent 会话的父会话（inspect 读 header，不激活 Agent；结果缓存）。 */
@@ -597,7 +651,8 @@ export class Hub {
     const keep = new Set(sessionIds)
     const stale = sessionIds.filter((id) => {
       const c = this.titleCache.get(id) ?? this.store.data.titles?.[id]
-      return !c || Date.now() - c.at > 300_000
+      // 标题基本不变：10 分钟内不重复读，readTitleSnapshots 约 126ms/会话。
+      return !c || Date.now() - c.at > 600_000
     })
     if (stale.length === 0) return
     this.titleRefreshRunning = true
@@ -683,9 +738,35 @@ export class Hub {
     return projectId
   }
 
-  /** 深度推断结果写缓存（面板批量路径在扫描后调用）。 */
+  /** 深度推断结果写缓存并持久化；重启后标题不变就直接复用，不再冷读日志。 */
   commitInferred(sessionId: string, title: string, projectId: string | null): void {
     this.inferCache.set(sessionId, { title, projectId })
+    const inferred = (this.store.data.inferred ??= {})
+    inferred[sessionId] = { title, projectId, at: Date.now() }
+    this.store.touch()
+  }
+
+  /** 已持久化的推断结论；只有标题一致时才可信（标题变了要重扫）。 */
+  cachedInference(sessionId: string, title: string): { known: boolean; projectId: string | null } {
+    const hit = this.inferCache.get(sessionId)
+    if (hit && hit.title === title) return { known: true, projectId: hit.projectId }
+    const saved = this.store.data.inferred?.[sessionId]
+    if (saved && saved.title === title) {
+      this.inferCache.set(sessionId, { title, projectId: saved.projectId })
+      return { known: true, projectId: saved.projectId }
+    }
+    return { known: false, projectId: null }
+  }
+
+  /** 丢弃不可见会话的持久化推断结论，控制存储体积。 */
+  pruneInferred(keep: ReadonlySet<string>): void {
+    const inferred = this.store.data.inferred
+    if (!inferred) return
+    let changed = false
+    for (const id of Object.keys(inferred)) {
+      if (!keep.has(id)) { delete inferred[id]; changed = true }
+    }
+    if (changed) this.store.touch()
   }
 
   /** 是否已有该标题下的推断结论（含"扫描过但不匹配"的 null 结论）。 */
@@ -998,6 +1079,37 @@ export class Hub {
   /** 丢弃不可见会话的扫描游标，控制存储体积。 */
   pruneScanCursors(keep: ReadonlySet<string>): void {
     const scans = this.store.data.alertScans
+    if (!scans) return
+    let changed = false
+    for (const id of Object.keys(scans)) {
+      if (!keep.has(id)) {
+        delete scans[id]
+        changed = true
+      }
+    }
+    if (changed) this.store.touch()
+  }
+
+  // ── AUQ 镜像游标 ─────────────────────────────────────────────────────────
+  //
+  // 会话日志没有更新时重复 observeSession 只是白读（每次 130-250ms），
+  // 因此记录每个会话已同步到的 updatedAt，面板轮询只同步真正变化的会话。
+
+  /** 该会话已同步到的日志版本；没有游标返回 undefined。 */
+  auqCursor(sessionId: string): { at: number; updatedAt: number } | undefined {
+    return this.store.data.auqScans?.[sessionId]
+  }
+
+  /** 记录 AUQ 镜像同步游标。 */
+  markAuqSynced(sessionId: string, updatedAt: number): void {
+    const scans = (this.store.data.auqScans ??= {})
+    scans[sessionId] = { at: Date.now(), updatedAt }
+    this.store.touch()
+  }
+
+  /** 丢弃不可见会话的 AUQ 游标，控制存储体积。 */
+  pruneAuqCursors(keep: ReadonlySet<string>): void {
+    const scans = this.store.data.auqScans
     if (!scans) return
     let changed = false
     for (const id of Object.keys(scans)) {

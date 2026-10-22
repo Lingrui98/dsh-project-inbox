@@ -135,11 +135,16 @@ interface SessionView {
 
 /** 实时归档集合：由 workspaceController.follow 长驻订阅维护（baseline + archived 增量都是全量帧）。 */
 const archivedLive = new Set<string>()
-const auqSyncAt = new Map<string, number>()
 let auqSyncRunning = false
 let visibleSessionIdsCache: { at: number; ids: Set<string> } | null = null
 
-/** Rebuild durable AUQ mirrors from the session projection after reloads. */
+/**
+ * 重建 AUQ 镜像：只同步可能变化的会话。
+ *
+ * 旧实现每 30 秒对所有可见会话 observeSession（每次 130-250ms），空闲会话也被
+ * 反复全量重读。现在按会话日志的 updatedAt 增量：日志没更新就跳过；运行中的
+ * 会话每 60 秒兜底一次；仍有待答问题的会话每 120 秒兜底一次。
+ */
 async function reconcileAuqMirrors(
   hub: Hub,
   ctx: AppContext,
@@ -147,13 +152,22 @@ async function reconcileAuqMirrors(
 ): Promise<void> {
   if (auqSyncRunning || sessions.length === 0) return
   const now = Date.now()
-  const stale = sessions.filter((s) => now - (auqSyncAt.get(s.id) ?? 0) > 30_000)
-  if (stale.length === 0) return
+  const pendingAuq = new Set(
+    hub.data.items.filter((it) => it.status === 'pending' && it.source === 'auq').map((it) => it.sessionId),
+  )
+  const targets = sessions.filter((view) => {
+    const cursor = hub.auqCursor(view.id)
+    if (!cursor || view.updatedAt > cursor.updatedAt) return true
+    if (view.running && now - cursor.at > 60_000) return true
+    return pendingAuq.has(view.id) && now - cursor.at > 120_000
+  })
+  if (targets.length === 0) return
   auqSyncRunning = true
   try {
-    for (let i = 0; i < stale.length; i += 4) {
-      await Promise.all(stale.slice(i, i + 4).map(async (view) => {
+    for (let i = 0; i < targets.length; i += 4) {
+      await Promise.all(targets.slice(i, i + 4).map(async (view) => {
         const sessionId = view.id
+        let ok = false
         try {
           const observation = await ctx.sessionQuery.observeSession(sessionId, { projectionMode: 'all' })
           try {
@@ -190,6 +204,7 @@ async function reconcileAuqMirrors(
                 await hub.upsertAuqItem(sessionId, callId, questions)
               }
             }
+            ok = true
           } finally {
             const release = (observation as any)[Symbol.dispose] ?? (observation as any).dispose
             release?.call(observation)
@@ -197,13 +212,15 @@ async function reconcileAuqMirrors(
         } catch {
           // Cold sessions can disappear during a concurrent archive or cleanup.
         } finally {
-          auqSyncAt.set(sessionId, Date.now())
+          // 只有完整成功才推进游标：中途失败保持旧游标，下一次轮询重试。
+          if (ok) hub.markAuqSynced(sessionId, view.updatedAt)
         }
       }))
     }
   } finally {
     auqSyncRunning = false
   }
+  hub.pruneAuqCursors(new Set(sessions.map((view) => view.id)))
 }
 
 // ── 会话中断告警：冷读回填 ───────────────────────────────────────────────────
@@ -387,7 +404,43 @@ async function sweepProgrammaticSessions(
   }
 }
 
-async function buildPanel(hub: Hub, ctx: AppContext, config: ConfigShape, alertState: AlertBackfillState): Promise<unknown> {
+/**
+ * 后台补全深度归因：读首条用户消息，写持久化结论。
+ * 单会话实测 1.1-1.7s，因此只并发 4 路，且绝不阻塞面板首帧。
+ */
+async function enrichSessions(hub: Hub, queue: SessionView[]): Promise<void> {
+  if (queue.length === 0) return
+  const pending = [...queue]
+  const workers = Array.from({ length: Math.min(4, pending.length) }, async () => {
+    for (let s = pending.shift(); s; s = pending.shift()) {
+      try {
+        const first = await hub.scanFirstUserMessage(s.id)
+        const fullText = `${s.title}\n${first}`
+        const projectId = hub.matchText(fullText)
+        hub.commitInferred(s.id, s.title, projectId)
+        hub.commitSuggest(s.id, s.title, hub.matchTextScored(fullText)?.id ?? null)
+        if (!projectId) continue
+        const current = hub.data.bindings[s.id]
+        if (current && (current.locked || current.by !== 'auto')) continue
+        hub.data.bindings[s.id] = { projectId, locked: false, by: 'auto', updatedAt: Date.now() }
+        hub.syncPendingItems(s.id, projectId)
+        hub.touch()
+      } catch {
+        // 冷会话可能在并发归档中消失；下一轮再处理。
+      }
+    }
+  })
+  await Promise.all(workers)
+  hub.pruneInferred(new Set(hub.panelSessions().map((s) => s.id)))
+}
+
+/**
+ * 组装面板载荷：纯内存计算，零 IO。
+ *
+ * 会话列表读持久化快照；标题、归因、建议全部读缓存。深度扫描、AUQ 镜像、
+ * 中断回填与会话列表刷新在返回后后台执行，下一次轮询自然收敛。
+ */
+function buildPanel(hub: Hub, ctx: AppContext, config: ConfigShape, alertState: AlertBackfillState): unknown {
   // 项目发现走 60s 定时与 rescan，不在面板热路径上
   // 子 agent 会话不纳入（origin === 'subagent'）；其投递经 parentOf 归到父会话项目
   // 已归档会话不进入任何收件箱视图（会话列表与消息都不显示）
@@ -395,29 +448,29 @@ async function buildPanel(hub: Hub, ctx: AppContext, config: ConfigShape, alertS
   // 回收站会话同理隐藏（数据保留，恢复后回来）
   const archived = archivedLive
   const trashed = new Set(Object.keys(hub.data.trashed ?? {}))
-  const summaries = (await hub.listSessionsCached()).filter(
-    (s: any) => s?.origin !== 'subagent' && !s?.parentSessionId && !archived.has(String(s.sessionId))
-      && !s?.blank && !trashed.has(String(s.sessionId)),
-  )
+  const sessions: SessionView[] = hub.panelSessions()
+    .filter((s) => s.origin !== 'subagent' && !s.parentSessionId && !archived.has(s.id) && !s.blank && !trashed.has(s.id))
+    .map((s) => ({
+      id: s.id,
+      title: '',
+      running: s.running,
+      updatedAt: s.updatedAt,
+      projectId: null,
+      bindBy: 'auto',
+      bindLocked: false,
+      suggested: null,
+    }))
+  const sessionIds = sessions.map((s) => s.id)
 
-  const sessions: SessionView[] = summaries.map((s) => ({
-    id: String(s.sessionId),
-    title: '',
-    running: Boolean(s.running),
-    updatedAt: Number(s.updatedAt) || 0,
-    projectId: null,
-    bindBy: 'auto',
-    bindLocked: false,
-    suggested: null,
-  }))
-
-  // 标题走缓存（空标题后台分批刷新，下一轮轮询拿到），不阻塞面板
+  // 标题读缓存；空标题由后台分批补齐，下一次轮询拿到。
   for (const s of sessions) s.title = hub.cachedTitle(s.id) ?? ''
-  hub.refreshTitles(ctx.sessionQuery, sessions.map((s) => s.id))
+  hub.refreshTitles(ctx.sessionQuery, sessionIds)
 
-  // 归因两阶段：① 显式绑定 + 标题匹配（零 IO）；② 近 3 天未命中的做深度扫描（限并发）
+  // 归因：显式绑定 > 标题匹配 > 持久化的深度推断结论，全部零 IO。
+  // 三者都没有结论的会话进后台深度扫描。
   const deepScan: SessionView[] = []
   const deepCutoff = Date.now() - 3 * 24 * 3600 * 1000
+  let bindingsChanged = false
   for (const s of sessions) {
     const explicit = hub.data.bindings[s.id]
     if (explicit && (explicit.locked || explicit.by !== 'auto')) {
@@ -429,45 +482,48 @@ async function buildPanel(hub: Hub, ctx: AppContext, config: ConfigShape, alertS
     const byTitle = hub.inferFromTitle(s.id, s.title)
     if (byTitle) {
       s.projectId = byTitle
-      hub.data.bindings[s.id] = { projectId: byTitle, locked: false, by: 'auto', updatedAt: Date.now() }
-      hub.touch()
+      if (!explicit || explicit.projectId !== byTitle) {
+        hub.data.bindings[s.id] = { projectId: byTitle, locked: false, by: 'auto', updatedAt: Date.now() }
+        bindingsChanged = true
+      }
+      continue
+    }
+    const inferred = hub.cachedInference(s.id, s.title)
+    if (inferred.known) {
+      if (inferred.projectId) {
+        s.projectId = inferred.projectId
+        if (!explicit || explicit.projectId !== inferred.projectId) {
+          hub.data.bindings[s.id] = { projectId: inferred.projectId, locked: false, by: 'auto', updatedAt: Date.now() }
+          bindingsChanged = true
+        }
+      } else if (explicit?.projectId) {
+        s.projectId = explicit.projectId
+      }
       continue
     }
     if (explicit?.projectId) {
       s.projectId = explicit.projectId
       continue
     }
-    // 已扫描过且标题未变（含"不匹配"结论）的会话不重复深度扫描
-    if (s.updatedAt >= deepCutoff && !hub.hasFreshInference(s.id, s.title)) deepScan.push(s)
+    if (s.updatedAt >= deepCutoff) deepScan.push(s)
   }
-  // 深度扫描：6 路并发读首条用户消息
-  const workers = Array.from({ length: Math.min(6, deepScan.length) }, async () => {
-    for (let s = deepScan.shift(); s; s = deepScan.shift()) {
-      const first = await hub.scanFirstUserMessage(s.id)
-      const fullText = `${s.title}\n${first}`
-      const projectId = hub.matchText(fullText)
-      hub.commitInferred(s.id, s.title, projectId)
-      hub.commitSuggest(s.id, s.title, hub.matchTextScored(fullText)?.id ?? null)
-      if (projectId) {
-        s.projectId = projectId
-        hub.data.bindings[s.id] = { projectId, locked: false, by: 'auto', updatedAt: Date.now() }
-        hub.syncPendingItems(s.id, projectId)
-      }
-    }
-  })
-  await Promise.all(workers)
-  if (sessions.some((s) => s.projectId)) hub.touch()
+  if (bindingsChanged) hub.touch()
 
   // 未绑定会话的"建议项目"：只读标题的最佳候选（平局也给，采纳权在人）
   for (const s of sessions) {
     if (s.projectId === null) s.suggested = hub.suggestFor(s.id, s.title)
   }
 
-  const visibleSessionIds = new Set(sessions.map((s) => s.id))
+  const visibleSessionIds = new Set(sessionIds)
   visibleSessionIdsCache = { at: Date.now(), ids: visibleSessionIds }
-  await reconcileAuqMirrors(hub, ctx, sessions.map((s) => ({ id: s.id, running: s.running, updatedAt: s.updatedAt })))
-  // 中断告警回填不阻塞面板：5 分钟节流，只扫窗口内更新过的会话
+
+  // 后台任务：不阻塞首帧；下一次轮询（8 秒）收敛。
+  void hub.syncSessions()
+  void enrichSessions(hub, deepScan)
+  void reconcileAuqMirrors(hub, ctx, sessions.map((s) => ({ id: s.id, running: s.running, updatedAt: s.updatedAt })))
+  // 中断告警回填：5 分钟节流，只扫窗口内更新过的会话
   void backfillTurnAlerts(hub, ctx, config, alertState, sessions, false)
+
   const runningById = new Map(sessions.map((s) => [s.id, s.running]))
   const titleById = new Map(sessions.map((s) => [s.id, s.title]))
   const enrich = (it: HubItem) => ({
@@ -520,7 +576,6 @@ async function buildPanel(hub: Hub, ctx: AppContext, config: ConfigShape, alertS
   }
 }
 
-
 /** 调用方是否子代理：根会话 id 带 session- 前缀且在 agents.roots() 里；子代理会话走 subagent routing，不在此列。 */
 function isSubagentCaller(ctx: AppContext, sessionId: string): boolean {
   if (!sessionId.startsWith('session-')) return true
@@ -560,6 +615,8 @@ export function apply(ctx: AppContext, config: ConfigShape): void {
   }
   if (staleBindings > 0) store.touch()
   hub.discoverProjects()
+  // 启动即在后台拉一次会话列表并落盘快照：面板首帧不必再等 list。
+  void hub.syncSessions(true)
 
   // 归档集合的长驻订阅：baseline 与 archived 增量帧都是全量集合，直接替换
   ctx.effect(() => {
@@ -859,8 +916,14 @@ export function apply(ctx: AppContext, config: ConfigShape): void {
 
   const api: Record<string, (payload: any) => Promise<unknown> | unknown> = {
     async panel() {
-      // 面板热路径不等待扫描；扫完后面板轮询自然收敛
-      void sweepProgrammaticSessions(hub, ctx, config, sweepState)
+      // 首帧读持久化快照，零 IO。只有首次安装还没有快照时才短暂等待列表刷新
+      // （最多 300ms），保证首页冷启动也在 0.5s 内返回；下一次轮询拿到完整数据。
+      if (!hub.hasSnapshot()) {
+        await Promise.race([
+          hub.syncSessions(true),
+          new Promise<void>((resolve) => setTimeout(resolve, 300)),
+        ])
+      }
       return buildPanel(hub, ctx, config, alertState)
     },
     /** 轻量角标数据：只读内存 store，不触发归因与标题读取。 */
@@ -963,6 +1026,8 @@ export function apply(ctx: AppContext, config: ConfigShape): void {
     async rescan() {
       hub.invalidateCaches()
       hub.discoverProjects()
+      // 显式请求：先把会话列表拉到最新再返回（用户主动重新扫描，可接受这次等待）。
+      await hub.syncSessions(true)
       // 手动重新扫描视为显式请求：强制补一次中断告警与程序化会话扫描
       void backfillTurnAlerts(hub, ctx, config, alertState, await hub.listSessionsCached(), true)
       void sweepProgrammaticSessions(hub, ctx, config, sweepState)
