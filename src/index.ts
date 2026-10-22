@@ -1,5 +1,5 @@
 /**
- * @dsh-external/dsh-project-inbox — host 侧：跨会话项目收件箱。
+ * dsh-project-inbox — host 侧：跨会话项目收件箱。
  *
  * 职责：
  * 1. 项目注册表：扫描项目根（含 paper.toml/.git 的子目录）+ 手动添加。
@@ -37,7 +37,7 @@ import { HubStore, type HubItem } from './host/store.js'
 import { createWebhookDispatcher, type WebhookEvent, type WebhookTarget } from './host/webhook.js'
 import { exportBundle, importBundle, PortabilityError } from './host/portability.js'
 
-export const name = '@dsh-external/dsh-project-inbox'
+export const name = 'dsh-project-inbox'
 export const inject = ['tools', 'systemPrompt', 'webServer', 'sessionController', 'userQuestions', 'agents', 'sessionQuery', 'sessionProjections', 'timer', 'workspaceController']
 
 export const Config: Schema<any, ConfigShape> = z.object({

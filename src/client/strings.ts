@@ -1,5 +1,5 @@
 /**
- * @dsh-external/dsh-project-inbox — client 侧文案字典（zh / en）。
+ * dsh-project-inbox — client 侧文案字典（zh / en）。
  *
  * - zh 字典的每条文案与 0.1.4 逐字一致，现有中文用户零感知。
  * - en 字典覆盖全部键；插值文案用函数表达，两种语言的参数形状一致。

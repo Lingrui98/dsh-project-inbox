@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.1
+
+- 发布到 npm：包名改为无 scope 的 `dsh-project-inbox`，可用 `dsh plugin --profile web add dsh-project-inbox` 安装，并进入 DSH 插件中心候选。
+- 修复：移除 package.json 的 `private` 字段；补 `publishConfig` 之外无需额外配置。
+- GitHub Releases 继续提供离线 tgz，内容与 npm 包一致。
+
 ## 0.3.0
 
 更名：`dsh-research-hub` → `dsh-project-inbox`（项目收件箱 / Project Inbox）。仓库与安装包名随之变化；工具名 `hub_register` / `hub_post`、路由 `/rhub/api`、配置字段与数据文件 `research-hub.json` 保持不变。升级时卸载旧包、安装新包即可，数据文件无需迁移。

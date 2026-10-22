@@ -3,6 +3,7 @@
 [English](README_EN.md) | 中文
 
 [![Release](https://img.shields.io/github/v/release/Lingrui98/dsh-project-inbox)](https://github.com/Lingrui98/dsh-project-inbox/releases/latest)
+[![npm](https://img.shields.io/npm/v/dsh-project-inbox)](https://www.npmjs.com/package/dsh-project-inbox)
 [![CI](https://github.com/Lingrui98/dsh-project-inbox/actions/workflows/ci.yml/badge.svg)](https://github.com/Lingrui98/dsh-project-inbox/actions/workflows/ci.yml)
 [![License: BSD-3-Clause](https://img.shields.io/badge/license-BSD--3--Clause-blue)](LICENSE)
 
@@ -50,13 +51,19 @@ DSH 生态里已经有不少会话管理器和提醒插件，它们各自解决�
 
 ### 1. 安装
 
-从 [Releases](https://github.com/Lingrui98/dsh-project-inbox/releases/latest) 下载安装包，在 DSH 的插件管理界面选择本地文件安装并启用；或者用 CLI：
+推荐从 npm 安装（插件中心也能一键装）：
 
 ```bash
-dsh plugin --profile web add /absolute/path/to/dsh-external-dsh-project-inbox-0.3.0.tgz
+dsh plugin --profile web add dsh-project-inbox
 ```
 
-安装包已包含编译产物，不需要自行构建。校验方式：
+离线或需要固定版本时，从 [Releases](https://github.com/Lingrui98/dsh-project-inbox/releases/latest) 下载 `.tgz` 后本地安装：
+
+```bash
+dsh plugin --profile web add /absolute/path/to/dsh-project-inbox-0.3.1.tgz
+```
+
+离线安装包已包含编译产物，不需要自行构建。校验方式：
 
 ```bash
 sha256sum -c SHA256SUMS
@@ -68,7 +75,7 @@ sha256sum -c SHA256SUMS
 
 ```yaml
 - id: dsh-project-inbox
-  name: '@dsh-external/dsh-project-inbox'
+  name: 'dsh-project-inbox'
   config:
     projectsRoots:
       - /path/to/projects
@@ -143,7 +150,7 @@ curl -fsS -X POST http://127.0.0.1:9999/rhub/api/post \
 - 目前只验证 DSH 0.2.0-rc.2；DSH 预发布版本之间接口可能变化。
 - 提问还在前台等待窗口内时，面板可能无法直接作答，此时在会话内回答即可。
 - 自动归属可能判断错项目，手动绑定会锁定结果。
-- 未发布到 npm 或官方插件目录，分发渠道是本仓库的 GitHub Releases。
+- 已发布到 npm；GitHub Releases 提供离线安装包，两者内容一致。
 
 ## 源码开发
 

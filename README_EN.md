@@ -3,6 +3,7 @@
 [中文](README.md) | English
 
 [![Release](https://img.shields.io/github/v/release/Lingrui98/dsh-project-inbox)](https://github.com/Lingrui98/dsh-project-inbox/releases/latest)
+[![npm](https://img.shields.io/npm/v/dsh-project-inbox)](https://www.npmjs.com/package/dsh-project-inbox)
 [![CI](https://github.com/Lingrui98/dsh-project-inbox/actions/workflows/ci.yml/badge.svg)](https://github.com/Lingrui98/dsh-project-inbox/actions/workflows/ci.yml)
 [![License: BSD-3-Clause](https://img.shields.io/badge/license-BSD--3--Clause-blue)](LICENSE)
 
@@ -50,13 +51,19 @@ The DSH ecosystem already has session managers and notification plugins, each so
 
 ### 1. Install
 
-Download the tarball from [Releases](https://github.com/Lingrui98/dsh-project-inbox/releases/latest) and install it from the DSH plugin manager, or use the CLI:
+Install from npm (also available in the in-app plugin center):
 
 ```bash
-dsh plugin --profile web add /absolute/path/to/dsh-external-dsh-project-inbox-0.3.0.tgz
+dsh plugin --profile web add dsh-project-inbox
 ```
 
-The package ships prebuilt; no build step is needed. To verify:
+For offline or pinned installs, download the tarball from [Releases](https://github.com/Lingrui98/dsh-project-inbox/releases/latest) and install it locally:
+
+```bash
+dsh plugin --profile web add /absolute/path/to/dsh-project-inbox-0.3.1.tgz
+```
+
+The offline package ships prebuilt; no build step is needed. To verify:
 
 ```bash
 sha256sum -c SHA256SUMS
@@ -68,7 +75,7 @@ The simplest setup is to give it a project root; its project directories become 
 
 ```yaml
 - id: dsh-project-inbox
-  name: '@dsh-external/dsh-project-inbox'
+  name: 'dsh-project-inbox'
   config:
     projectsRoots:
       - /path/to/projects
@@ -143,7 +150,7 @@ Push inbox events to your service (signed requests, retries, private addresses r
 - Only DSH 0.2.0-rc.2 is verified; pre-release DSH interfaces may change.
 - While a question is still inside its foreground waiting window, the panel may not be able to answer it — answer it in the session instead.
 - Automatic attribution can be wrong; a manual binding locks the result.
-- Not published to npm or an official plugin catalog; distribution is through GitHub Releases.
+- Published on npm; GitHub Releases provide offline tarballs with the same content.
 
 ## Development
 

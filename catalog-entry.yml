@@ -5,7 +5,7 @@
 url: https://github.com/Lingrui98/dsh-project-inbox
 name: Lingrui98/dsh-project-inbox
 category: session
-tarball: https://github.com/Lingrui98/dsh-project-inbox/releases/download/v0.3.0/dsh-external-dsh-project-inbox-0.3.0.tgz
+tarball: https://github.com/Lingrui98/dsh-project-inbox/releases/download/v0.3.1/dsh-project-inbox-0.3.1.tgz
 description:
   en: 'Project inbox for DeepSeek Harness: collect questions, deliverables and interrupted turns from every session, handle them in place, and keep sessions grouped by project automatically. Tested on DSH 0.2.0-rc.2; install the prebuilt Release tarball.'
   zh: 'DSH 项目收件箱：把散在多个会话里的提问、交付和中断收进一个面板并原地处理，自动按项目归组会话。已验证 DSH 0.2.0-rc.2，使用预构建 Release 安装包。'

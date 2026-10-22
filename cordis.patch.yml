@@ -3,5 +3,5 @@
 # client 由 dsh.client 声明驱动，注册 panellist 图标与 main 面板。
 - insert:
     - id: dsh-project-inbox
-      name: '@dsh-external/dsh-project-inbox'
+      name: 'dsh-project-inbox'
       config: {}

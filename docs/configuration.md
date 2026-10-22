@@ -4,7 +4,7 @@
 
 ```yaml
 - id: dsh-project-inbox
-  name: '@dsh-external/dsh-project-inbox'
+  name: 'dsh-project-inbox'
   config: {}
 ```
 
