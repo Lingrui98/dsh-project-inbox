@@ -25,9 +25,11 @@
     "dsh",
     "deepseek-harness",
     "plugin",
-    "research",
     "dashboard",
-    "inbox"
+    "inbox",
+    "project-inbox",
+    "session-management",
+    "workbench"
   ],
   "engines": {
     "node": ">=24",

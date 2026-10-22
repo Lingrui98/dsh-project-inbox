@@ -1383,22 +1383,19 @@ export const inject = ['slots']
 
 export function apply(ctx: ClientContext): void {
   ctx.effect(() => ctx.slots.inject('main', () =>
-    (ctx.slots as any).register(
-      { name: 'main', key: PANEL_ID },
+    (ctx.slots as any).register({ name: 'main', key: PANEL_ID },
       () => h(HubPage, { ctx }),
     ),
   ), 'research-hub: main panel')
 
   ctx.effect(() => ctx.slots.inject('sidebar.panellist', () =>
-    (ctx.slots as any).register(
-      { name: 'sidebar.panellist', id: PANEL_ID, order: 20, label: () => T.hubName },
+    (ctx.slots as any).register({ name: 'sidebar.panellist', id: PANEL_ID, order: 20, label: () => T.hubName },
       HubIcon,
     ),
   ), 'research-hub: panellist icon')
 
   ctx.effect(() => ctx.slots.inject('conversation.session.header.utilities', () =>
-    (ctx.slots as any).register(
-      {
+    (ctx.slots as any).register({
         name: 'conversation.session.header.utilities',
         id: 'research-hub-return',
         order: 30,

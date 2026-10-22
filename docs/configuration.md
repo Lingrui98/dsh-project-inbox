@@ -129,7 +129,7 @@ curl -fsS -X POST http://127.0.0.1:9999/rhub/api/post \
 ```yaml
     storage:
       driver: sqlite
-      file: /path/to/research-hub.sqlite
+      file: /path/to/project-inbox.sqlite
       migrateFrom: /path/to/research-hub.json
 ```
 
