@@ -12,6 +12,8 @@ import React from 'react'
 import type { SlotsService } from '@deepseek-ai/dsh-client-ui-slots'
 import { HUB_CSS } from './styles.js'
 import { pickStrings } from './strings.js'
+import { assignItems, groupItems, normalizeLayout } from './layout.js'
+import type { LayoutSectionSource } from './layout.js'
 
 const h = React.createElement
 const PANEL_ID = 'research-hub'
@@ -104,6 +106,8 @@ interface PanelData {
   unassignedCounts: Counts
   trashedSessions: { id: string; title: string; at: number }[]
   items: HubItemView[]
+  /** 可选布局配置（"全部待处理"视图的分区与分组）；缺省与固定渲染等价。 */
+  layout?: unknown
 }
 
 // ── API ──────────────────────────────────────────────────────────────────────
@@ -1044,6 +1048,23 @@ function HubPage(props: { ctx: any }) {
   const itemCard = (it: HubItemView) =>
     h(ItemCard, { key: it.id, item: it, now: data.now, onChanged: load, onJump: jump })
 
+  const emptyBlock = (tone: string, icon: keyof typeof ICON_PATHS, emptyText: string) =>
+    h('div', {
+      key: 'e',
+      style: { ...S.muted, display: 'flex', alignItems: 'center', gap: 7, padding: '10px 12px', borderRadius: 9, background: tint(tone, 5), border: `1px solid ${tint(tone, 18)}` },
+    }, [h(Icon, { key: 'i', name: icon, size: 14, color: tone }), h('span', { key: 't' }, emptyText)])
+
+  // 分区骨架：标题行 + 主体。key 用标题文本，与 0.1.4 固定渲染一致。
+  const renderSection = (title: string, tone: string, icon: keyof typeof ICON_PATHS, count: number, body: React.ReactNode) =>
+    h('section', { key: title, className: 'rh-section', style: { marginBottom: 22, minWidth: 0 } }, [
+      h('h2', { key: 't', className: 'rh-section-heading' }, [
+        h('span', { key: 'icon', style: { padding: 6, borderRadius: 8, color: tone, background: tint(tone, 9), display: 'inline-flex' } }, h(Icon, { name: icon, size: 14 })),
+        h('span', { key: 'label' }, title),
+        h('span', { key: 'count', style: { color: C.text2, fontSize: 11, fontWeight: 500, background: tint(C.text2, 7), padding: '1px 7px', borderRadius: 5 } }, count),
+      ]),
+      body,
+    ])
+
   // kind 同时决定标题文案与色调/图标；不再从标题文本反推，避免英文标题失配。
   const section = (kind: 'alerts' | 'questions' | 'deliverables' | 'pending' | 'history' | 'unassignedItems', list: HubItemView[], emptyText?: string) => {
     const tone = kind === 'questions' ? C.warn
@@ -1058,21 +1079,12 @@ function HubPage(props: { ctx: any }) {
       : kind === 'history' ? T.sectionHistory
       : kind === 'pending' ? T.sectionPending
       : T.sectionUnassignedItems
-    return h('section', { key: title, className: 'rh-section', style: { marginBottom: 22, minWidth: 0 } }, [
-      h('h2', { key: 't', className: 'rh-section-heading' }, [
-        h('span', { key: 'icon', style: { padding: 6, borderRadius: 8, color: tone, background: tint(tone, 9), display: 'inline-flex' } }, h(Icon, { name: icon, size: 14 })),
-        h('span', { key: 'label' }, title),
-        h('span', { key: 'count', style: { color: C.text2, fontSize: 11, fontWeight: 500, background: tint(C.text2, 7), padding: '1px 7px', borderRadius: 5 } }, list.length),
-      ]),
-      list.length > 0
-        ? list.map(itemCard)
-        : emptyText
-          ? h('div', {
-            key: 'e',
-            style: { ...S.muted, display: 'flex', alignItems: 'center', gap: 7, padding: '10px 12px', borderRadius: 9, background: tint(tone, 5), border: `1px solid ${tint(tone, 18)}` },
-          }, [h(Icon, { key: 'i', name: icon as keyof typeof ICON_PATHS, size: 14, color: tone }), h('span', { key: 't' }, emptyText)])
-          : null,
-    ])
+    const body = list.length > 0
+      ? list.map(itemCard)
+      : emptyText
+        ? emptyBlock(tone, icon, emptyText)
+        : null
+    return renderSection(title, tone, icon, list.length, body)
   }
 
   const sessionSection = (title: string, sessions: SessionView[]) =>
@@ -1215,14 +1227,45 @@ function HubPage(props: { ctx: any }) {
         ),
     ])
   } else if (selected === '__all__') {
-    const pendingA = data.items.filter((it) => it.status === 'pending' && it.type === 'alert')
-    const pendingQ = data.items.filter((it) => it.status === 'pending' && it.type === 'question')
-    const pendingD = data.items.filter((it) => it.status === 'pending' && it.type === 'deliverable')
-    body = h('div', { className: 'rh-inbox-grid' }, [
-      section('alerts', pendingA, T.emptyAlerts),
-      section('questions', pendingQ, T.emptyQuestions),
-      section('deliverables', pendingD, T.emptyDeliverables),
-    ])
+    // 分区布局：panel 载荷可带可选 layout；缺省布局与 0.1.4 固定渲染逐节点等价。
+    const layout = normalizeLayout(data.layout)
+    const sections = layout.sections ?? []
+    const grouped = assignItems(data.items, layout)
+    const groupBy = layout.groupBy ?? 'none'
+    // source 决定标题文案与色调/图标；与 section() 的映射保持一致。
+    const sectionMeta: Record<LayoutSectionSource, { tone: string; icon: keyof typeof ICON_PATHS; title: string; empty?: string }> = {
+      alerts: { tone: C.err, icon: 'warning', title: T.sectionAlerts, empty: T.emptyAlerts },
+      questions: { tone: C.warn, icon: 'question', title: T.sectionPendingQuestions, empty: T.emptyQuestions },
+      deliverables: { tone: C.ok, icon: 'package', title: T.sectionPendingDeliverables, empty: T.emptyDeliverables },
+      pending: { tone: C.brand, icon: 'inbox', title: T.sectionPending, empty: T.emptyPending },
+      history: { tone: C.text3, icon: 'inbox', title: T.sectionHistory },
+      all: { tone: C.brand, icon: 'inbox', title: T.pageTitleAll, empty: T.emptyPending },
+    }
+    const groupLabel = (key: string): string => {
+      if (groupBy === 'project') return data.projects.find((p) => p.id === key)?.name ?? (key === 'unassigned' ? T.unassignedName : key)
+      if (groupBy === 'kind') return key === 'alert' ? T.sectionAlerts : key === 'question' ? T.sectionPendingQuestions : key === 'deliverable' ? T.sectionPendingDeliverables : key
+      if (groupBy === 'priority') return key === 'urgent' ? T.pillUrgent : key
+      return key
+    }
+    body = h('div', { className: 'rh-inbox-grid' }, sections.map((sec) => {
+      const meta = sectionMeta[sec.source]
+      const title = sec.title ?? meta.title
+      const list = grouped.get(sec.id) ?? []
+      const content = sec.collapsed
+        ? null
+        : list.length > 0
+          ? groupBy === 'none'
+            // 默认路径：分组头不存在，DOM 与固定渲染一致。
+            ? list.map(itemCard)
+            : groupItems(list, groupBy).flatMap((group) => [
+              h('div', { key: `g:${group.key}`, style: { ...S.muted, fontSize: 11, fontWeight: 600, margin: '10px 0 6px' } }, groupLabel(group.key)),
+              ...group.items.map(itemCard),
+            ])
+          : meta.empty
+            ? emptyBlock(meta.tone, meta.icon, meta.empty)
+            : null
+      return renderSection(title, meta.tone, meta.icon, list.length, content)
+    }))
   } else if (selected === '__unassigned__') {
     const pendingItems = data.items.filter((it) => it.projectId === null && it.status === 'pending')
     body = h('div', { className: 'rh-detail-grid' }, [

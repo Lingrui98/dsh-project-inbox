@@ -81,6 +81,10 @@ GitHub 源码快照不含 `lib/`，不能替代 Release 安装包。当前未发
 | `autoTrashProgrammatic` | `true` | 程序化会话（headless/脚本一次性运行）自动进入回收站 |
 | `discovery` | 见下 | 项目发现规则：`markers`（默认 `["paper.toml",".git"]`）、`maxDepth`（默认 `1`）、`stopWords`、`excludeDirs`（默认 `[".git","node_modules"]`） |
 | `kinds` | 内置三类 | 消息类型注册表：`question`/`deliverable`/`alert` 的 `label`、`action`（`answer`/`ack`/`inspect`/`read`）与 `postable`；可新增自定义类型 |
+| `ingest.http` | 全部关闭 | 外部投递：`enabled`（默认 `false`）、`tokenEnv`（默认 `RHUB_INGEST_TOKEN`）、`loopbackOnly`（默认 `true`）、`rateLimitPerMin`（默认 `30`）、`idempotencyTtlHours`（默认 `24`） |
+| `view` | 空（默认布局） | 面板布局：`sections`、`groupBy`（`project`/`kind`/`priority`/`none`）、`defaultSection` |
+| `webhooks` | `[]` | 出站事件：`url`、`events`、`secret`、`headers`、`timeoutMs`、`retries`；默认拒绝私网地址 |
+| `webhookAllowPrivate` | `false` | 允许 webhook 指向私网/回环地址（本地联调时才开） |
 
 推荐在 profile patch 里固定项目根目录，避免宿主从其他目录启动时丢失项目：
 
@@ -102,6 +106,43 @@ GitHub 源码快照不含 `lib/`，不能替代 Release 安装包。当前未发
 ```
 
 通用的多会话工作流可以用 `markers` 指向自己的项目标记文件（例如 `package.json`）。不配置 `discovery` 时行为与 0.1.4 完全一致。
+
+### 外部投递
+
+开启后，CI、脚本或另一台机器可以往收件箱投递（默认关闭；token 从配置指定的环境变量读取）：
+
+```yaml
+- id: dsh-research-hub
+  config:
+    ingest:
+      http:
+        enabled: true
+        tokenEnv: RHUB_INGEST_TOKEN
+```
+
+```bash
+curl -fsS -X POST http://127.0.0.1:9999/rhub/api/post \
+  -H "Authorization: Bearer $RHUB_INGEST_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"type":"deliverable","title":"CI 构建完成","body":"...","project":"my-project","idempotencyKey":"ci-20261022-1"}'
+```
+
+同 `idempotencyKey` 在 TTL 内重复投递返回首次的 `itemId`，不会重复建条。外部条目在面板中始终可见，没有会话的条目只能查收/忽略，不能回复。
+
+### 出站 webhook
+
+收件箱事件可推送到外部服务（HMAC-SHA256 签名、指数退避重试；默认拒绝私网地址）：
+
+```yaml
+    webhooks:
+      - url: https://example.com/rhub
+        events: [item.created, item.urgent, alert.created]
+        secret: change-me
+    # 本地联调时才打开：
+    # webhookAllowPrivate: true
+```
+
+请求头：`x-rhub-event`、`x-rhub-timestamp`、`x-rhub-signature: sha256=<hmac>`，签名内容为 `timestamp.body`。
 
 插件会将每个根目录本身登记为项目，并按 `discovery.markers` 扫描子目录（默认含 `paper.toml` 或 `.git`）。标记文件里的 `name`/`title` 会作为项目显示名。也可以在界面新建项目。插件不包含作者个人项目注册表、会话记录或机器路径。
 

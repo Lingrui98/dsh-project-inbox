@@ -40,8 +40,8 @@ export const DEFAULT_KINDS: Record<string, KindSpec> = {
   alert: { label: '中断', action: 'inspect', postable: false },
 }
 export type ItemStatus = 'pending' | 'answered' | 'dismissed'
-/** 条目来源：agent 工具投递、ask_user_question 镜像、宿主中断告警。 */
-export type ItemSource = 'tool' | 'auq' | 'system'
+/** 条目来源：agent 工具投递、ask_user_question 镜像、宿主中断告警、外部 HTTP 投递。 */
+export type ItemSource = 'tool' | 'auq' | 'system' | 'external'
 
 /**
  * 中断告警原因，对应会话日志 `turn/end` 的 reason.kind。
@@ -155,6 +155,11 @@ export interface StoreData {
    * 会话日志没有更新就跳过，不再每 30 秒全量重读。
    */
   auqScans?: Record<string, { at: number; updatedAt: number }>
+  /**
+   * 外部投递幂等键：idempotencyKey → 首次创建的条目 id 与创建时间。
+   * TTL 内的重复投递返回首次的 itemId，不重复建条；v2 加可选字段，不升版本。
+   */
+  ingestKeys?: Record<string, { itemId: string; at: number }>
 }
 
 export class HubStore {
@@ -195,6 +200,7 @@ export class HubStore {
       if (!this.data.sessions) this.data.sessions = { at: 0, items: [] }
       if (!this.data.inferred) this.data.inferred = {}
       if (!this.data.auqScans) this.data.auqScans = {}
+      if (!this.data.ingestKeys) this.data.ingestKeys = {}
       if (migrated) this.flush()
     } catch {
       /* 读取失败从空开始；原文件不覆盖，下次 flush 才替换 */

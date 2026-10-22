@@ -12,6 +12,7 @@
 import type { Context } from '@deepseek-ai/cordis'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
+import { createHash, timingSafeEqual } from 'node:crypto'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import z from '@deepseek-ai/schemastery'
 import type Schema from '@deepseek-ai/schemastery'
@@ -33,6 +34,7 @@ import {
   type DiscoveryConfig,
 } from './host/discovery.js'
 import { HubStore, type HubItem } from './host/store.js'
+import { createWebhookDispatcher, type WebhookEvent, type WebhookTarget } from './host/webhook.js'
 
 export const name = '@dsh-external/dsh-research-hub'
 export const inject = ['tools', 'systemPrompt', 'webServer', 'sessionController', 'userQuestions', 'agents', 'sessionQuery', 'sessionProjections', 'timer', 'workspaceController']
@@ -79,6 +81,47 @@ export const Config: Schema<any, ConfigShape> = z.object({
     /** 是否允许 agent 经 hub_post 投递；内置 alert 默认 false。 */
     postable: z.boolean().default(true),
   })).default({}),
+  /**
+   * 外部投递：CI、脚本、定时任务经 POST /rhub/api/post 投递到收件箱。
+   * 默认关闭；关闭时该方法与未知方法一样返回 404，不暴露能力。
+   */
+  ingest: z.object({
+    http: z.object({
+      /** 外部投递开关。 */
+      enabled: z.boolean().default(false),
+      /** 从该环境变量读 Bearer token；enabled 时该变量必须非空，否则拒绝启用。 */
+      tokenEnv: z.string().default('RHUB_INGEST_TOKEN'),
+      /** 只接受回环请求；关闭后安全完全依赖 Bearer token。 */
+      loopbackOnly: z.boolean().default(true),
+      /** 每 token 每分钟投递次数上限，超限返回 429。 */
+      rateLimitPerMin: z.number().default(30),
+      /** 幂等键保留时长（小时）；TTL 内重复投递返回首次的 itemId。 */
+      idempotencyTtlHours: z.number().default(24),
+    }).default({}),
+  }).default({}),
+  /**
+   * 面板布局：分区、顺序与分组方式；缺省与当前渲染完全一致。
+   * 结构由客户端 src/client/layout.ts 归一化，host 侧只透传。
+   */
+  view: z.object({
+    sections: z.array(z.any()).default([]),
+    groupBy: z.string().default('none'),
+    defaultSection: z.string().default(''),
+  }).default({}),
+  /**
+   * 出站 webhook：收件箱事件推送到外部服务；空数组表示关闭。
+   * 目标默认拒绝私网/回环地址（防 SSRF），需要时用 webhookAllowPrivate 显式放开。
+   */
+  webhooks: z.array(z.object({
+    url: z.string(),
+    events: z.array(z.string()).default([]),
+    secret: z.string().default(''),
+    headers: z.dict(z.string()).default({}),
+    timeoutMs: z.number().default(5000),
+    retries: z.number().default(3),
+  })).default([]),
+  /** 允许 webhook 指向私网/回环地址；默认 false。 */
+  webhookAllowPrivate: z.boolean().default(false),
 })
 
 interface ConfigShape {
@@ -91,6 +134,22 @@ interface ConfigShape {
   autoTrashProgrammatic: boolean
   discovery: DiscoveryConfig
   kinds: Record<string, { label: string; action: string; postable: boolean }>
+  /** 面板布局；缺省与当前渲染一致。 */
+  view: { sections: unknown[]; groupBy: string; defaultSection: string }
+  /** 出站 webhook 目标；空数组表示关闭。 */
+  webhooks: Array<{ url: string; events: string[]; secret: string; headers: Record<string, string>; timeoutMs: number; retries: number }>
+  /** 允许 webhook 指向私网/回环地址。 */
+  webhookAllowPrivate: boolean
+  /** 外部投递配置；缺省视为全部默认值（关闭）。 */
+  ingest?: {
+    http?: {
+      enabled?: boolean
+      tokenEnv?: string
+      loopbackOnly?: boolean
+      rateLimitPerMin?: number
+      idempotencyTtlHours?: number
+    }
+  }
 }
 
 type AppContext = Context & {
@@ -151,6 +210,16 @@ function requireString(payload: any, key: string): string {
   const value = payload?.[key]
   if (typeof value !== 'string' || value.trim() === '') throw new ApiError('bad-request', `缺少字段 ${key}`)
   return value
+}
+
+/**
+ * Bearer token 的恒定时间比较。
+ * 先各自取 SHA-256 再 timingSafeEqual：避免长度不同直接抛错，也不泄漏长度信息。
+ */
+function tokenMatches(presented: string, expected: string): boolean {
+  const a = createHash('sha256').update(presented, 'utf8').digest()
+  const b = createHash('sha256').update(expected, 'utf8').digest()
+  return timingSafeEqual(a, b)
 }
 
 // ── 面板载荷 ────────────────────────────────────────────────────────────────
@@ -572,7 +641,8 @@ function buildPanel(hub: Hub, ctx: AppContext, config: ConfigShape, alertState: 
 
   // 已归档/回收站会话的消息同样不进入任何收件箱视图（数据保留，恢复后回来）
   // 子代理产生的消息（无前缀 id 的会话）同样不进视图
-  const items = hub.sortedItems().filter((it) => visibleSessionIds.has(it.sessionId) && !archived.has(it.sessionId) && !trashed.has(it.sessionId))
+  // 外部投递的消息没有会话（sessionId 为空），不参与会话过滤，始终可见
+  const items = hub.sortedItems().filter((it) => (visibleSessionIds.has(it.sessionId) || it.source === 'external') && !archived.has(it.sessionId) && !trashed.has(it.sessionId))
   const countsOf = (projectId: string | null) => {
     const scoped = items.filter((it) => it.projectId === projectId && it.status === 'pending')
     return {
@@ -608,6 +678,8 @@ function buildPanel(hub: Hub, ctx: AppContext, config: ConfigShape, alertState: 
     unassignedCounts: countsOf(null),
     /** 生效中的 kinds 注册表：面板按它渲染 label/action，type 字段保留原值。 */
     kinds: hub.kinds,
+    /** 面板布局：缺省为空对象，客户端回落到与当前一致的默认布局。 */
+    layout: config.view ?? {},
     // 待处理项必须完整返回，只有历史记录限制数量，避免计数与可处理列表不一致。
     items: [...items.filter((it) => it.status === 'pending'), ...items.filter((it) => it.status !== 'pending').slice(0, 300)].map(enrich),
   }
@@ -648,6 +720,24 @@ export function apply(ctx: AppContext, config: ConfigShape): void {
     // 拷贝而不是共享引用：注册表后续变化不污染已落盘快照
     store.data.kinds = JSON.parse(JSON.stringify(hub.kinds))
     store.touch()
+  }
+
+  // 出站 webhook：为空数组时完全不生效；投递失败只记日志，不阻塞收件箱
+  const webhookTargets = config.webhooks ?? []
+  if (webhookTargets.length > 0) {
+    const webhookEvents = new Set<string>(['item.created', 'item.settled', 'item.urgent', 'alert.created'])
+    const dispatcher = createWebhookDispatcher({
+      targets: webhookTargets.map((target) => ({
+        ...target,
+        events: target.events.filter((event): event is WebhookEvent => webhookEvents.has(event)),
+      })) as WebhookTarget[],
+      logger: { warn: (message: string, ...args: unknown[]) => ctx.logger?.warn?.(message, ...args) },
+      allowPrivate: config.webhookAllowPrivate,
+    })
+    hub.onItemEvent = (event, item) => {
+      const project = item.projectId ? store.data.projects.find((project_) => project_.id === item.projectId)?.name : undefined
+      void dispatcher.dispatch(event, item, project ? { project } : undefined)
+    }
   }
   // 清理陈旧绑定：无前缀 id 属于子代理会话（subagent routing），不应占位
   let staleBindings = 0
@@ -960,7 +1050,36 @@ export function apply(ctx: AppContext, config: ConfigShape): void {
 
   // ── 面板 API ─────────────────────────────────────────────────────────────
 
-  const api: Record<string, (payload: any) => Promise<unknown> | unknown> = {
+  // 外部投递（ingest）：默认关闭。enabled 但环境变量里没有 token 时拒绝启用并告警，
+  // 宁可不可用也不放行未鉴权的写入。
+  const ingestHttp = {
+    enabled: false,
+    tokenEnv: 'RHUB_INGEST_TOKEN',
+    loopbackOnly: true,
+    rateLimitPerMin: 30,
+    idempotencyTtlHours: 24,
+    ...(config.ingest?.http ?? {}),
+  }
+  const ingestToken = ingestHttp.enabled ? String(process.env[ingestHttp.tokenEnv] ?? '') : ''
+  if (ingestHttp.enabled && !ingestToken) {
+    ctx.logger?.warn?.(`[research-hub] ingest.http.enabled=true 但环境变量 ${ingestHttp.tokenEnv} 为空，外部投递未启用`)
+  }
+  const ingestActive = Boolean(ingestHttp.enabled && ingestToken)
+  /** 限流桶：token → 固定窗口计数（分钟级，内存态，重启清零）。 */
+  const ingestBuckets = new Map<string, { start: number; count: number }>()
+  const ingestRateLimited = (token: string): boolean => {
+    const limit = Math.max(1, ingestHttp.rateLimitPerMin)
+    const now = Date.now()
+    const bucket = ingestBuckets.get(token)
+    if (!bucket || now - bucket.start >= 60_000) {
+      ingestBuckets.set(token, { start: now, count: 1 })
+      return false
+    }
+    bucket.count += 1
+    return bucket.count > limit
+  }
+
+  const api: Record<string, (payload: any, req: IncomingMessage) => Promise<unknown> | unknown> = {
     async panel() {
       // 首帧读持久化快照，零 IO。只有首次安装还没有快照时才短暂等待列表刷新
       // （最多 300ms），保证首页冷启动也在 0.5s 内返回；下一次轮询拿到完整数据。
@@ -977,7 +1096,7 @@ export function apply(ctx: AppContext, config: ConfigShape): void {
       const archived = archivedLive
       const trashedIds = store.data.trashed ?? {}
       const visible = visibleSessionIdsCache?.ids
-      const pending = store.data.items.filter((it) => it.status === 'pending' && (!visible || visible.has(it.sessionId)) && !archived.has(it.sessionId) && !trashedIds[it.sessionId])
+      const pending = store.data.items.filter((it) => it.status === 'pending' && (!visible || visible.has(it.sessionId) || it.source === 'external') && !archived.has(it.sessionId) && !trashedIds[it.sessionId])
       return {
         pending: pending.length,
         questions: pending.filter((it) => it.type === 'question').length,
@@ -1081,11 +1200,75 @@ export function apply(ctx: AppContext, config: ConfigShape): void {
     },
   }
 
+  // 外部投递入口：只在 enabled 且 token 就绪时注册；否则与未知方法一样 404。
+  if (ingestActive) {
+    api.post = async (payload, req) => {
+      if (ingestHttp.loopbackOnly && !isLoopbackRequest(req)) {
+        throw new ApiError('forbidden', '外部投递仅接受回环请求', 403)
+      }
+      const auth = String(req?.headers?.authorization ?? '')
+      const presented = auth.startsWith('Bearer ') ? auth.slice(7).trim() : ''
+      if (!presented || !tokenMatches(presented, ingestToken)) {
+        throw new ApiError('unauthorized', 'Bearer token 缺失或不匹配', 401)
+      }
+      if (ingestRateLimited(presented)) {
+        throw new ApiError('rate-limited', '投递过于频繁，请稍后再试', 429)
+      }
+      // 幂等：先清过期键，再命中 TTL 内的首次创建结果
+      const keys = (store.data.ingestKeys ??= {})
+      const now = Date.now()
+      const ttlMs = Math.max(1, ingestHttp.idempotencyTtlHours) * 3600_000
+      for (const [key, entry] of Object.entries(keys)) {
+        if (!entry || now - entry.at > ttlMs) delete keys[key]
+      }
+      const idem = typeof payload?.idempotencyKey === 'string' ? payload.idempotencyKey.trim().slice(0, 200) : ''
+      if (idem && keys[idem]) {
+        return { itemId: keys[idem].itemId, idempotent: true }
+      }
+      // 类型校验与 hub_post 一致：只接受已注册且允许投递的类型
+      const type = typeof payload?.type === 'string' ? payload.type : ''
+      const spec = hub.kinds[type]
+      if (!spec) throw new ApiError('bad-request', `未知消息类型，已注册类型：${Object.keys(hub.kinds).join(' / ')}`)
+      if (spec.postable === false) throw new ApiError('forbidden', `消息类型 ${type} 由宿主产生，不能经外部投递`, 403)
+      const title = typeof payload?.title === 'string' ? payload.title.trim() : ''
+      if (!title) throw new ApiError('bad-request', 'title 不能为空')
+      // 归属：显式 project 必须匹配（id/名称/别名）；缺省进未分配收件箱
+      let projectId: string | null = null
+      if (typeof payload?.project === 'string' && payload.project.trim() !== '') {
+        const project = hub.resolveProject(payload.project)
+        if (!project) {
+          const available = store.data.projects.map((p) => p.id).join(', ') || '(无)'
+          throw new ApiError('bad-request', `未匹配到项目 "${payload.project}"，可用项目：${available}`)
+        }
+        projectId = project.id
+      }
+      const item = await hub.addItem({
+        sessionId: '',
+        type,
+        title,
+        body: typeof payload?.body === 'string' ? payload.body : '',
+        priority: payload?.priority === 'urgent' ? 'urgent' : 'normal',
+        source: 'external',
+        projectId,
+      })
+      if (idem) {
+        keys[idem] = { itemId: item.id, at: now }
+        store.touch()
+      }
+      return { itemId: item.id, projectId: item.projectId }
+    }
+  }
+
   ctx.effect(() => ctx.webServer.register({
     kind: 'prefix',
     path: '/rhub/api',
     handler: async (req: IncomingMessage, res: ServerResponse) => {
-      if (!isLoopbackRequest(req)) {
+      const pathname = new URL(req.url ?? '/', 'http://rhub.internal').pathname
+      const method = pathname.startsWith('/rhub/api/') ? pathname.slice('/rhub/api/'.length) : undefined
+      // loopbackOnly=false 的外部投递接受非回环请求（安全由 Bearer token 承担）；
+      // 其余所有方法保持只接受回环。ingest 未启用时行为与之前完全一致。
+      const openIngest = method === 'post' && ingestActive && !ingestHttp.loopbackOnly
+      if (!openIngest && !isLoopbackRequest(req)) {
         writeJson(res, 403, { ok: false, error: { code: 'forbidden', message: 'forbidden' } })
         return
       }
@@ -1093,8 +1276,6 @@ export function apply(ctx: AppContext, config: ConfigShape): void {
         writeJson(res, 405, { ok: false, error: { code: 'method-error', message: 'method not allowed' } })
         return
       }
-      const pathname = new URL(req.url ?? '/', 'http://rhub.internal').pathname
-      const method = pathname.startsWith('/rhub/api/') ? pathname.slice('/rhub/api/'.length) : undefined
       if (!method || method.includes('/')) {
         writeJson(res, 404, { ok: false, error: { code: 'not-found', message: 'unknown method' } })
         return
@@ -1106,7 +1287,7 @@ export function apply(ctx: AppContext, config: ConfigShape): void {
       }
       try {
         const payload = await readJsonBody(req)
-        writeJson(res, 200, { ok: true, value: await handler(payload) })
+        writeJson(res, 200, { ok: true, value: await handler(payload, req) })
       } catch (error) {
         if (error instanceof ApiError) {
           writeJson(res, error.status, { ok: false, error: { code: error.code, message: error.message } })

@@ -8,6 +8,10 @@
 - store 升级到 v2：加载 v1 文件时先备份 `<store>.v1.bak`，补默认 kinds 后幂等迁移；v2 不重复迁移。
 - 客户端文案抽取为中英双语（`src/client/strings.ts`），按 `document.lang` → `navigator.language` → 中文回退自动选择；中文界面与 0.1.4 逐字一致。
 - 新增测试：`discovery.test.mjs`、`store-migration.test.mjs`、`client-i18n.test.mjs`；测试脚本纳入全部新用例。
+- Phase 2：新增外部投递 `POST /rhub/api/post`（默认关闭、Bearer token、幂等键、限流、外部条目在面板可见）。
+- Phase 2：面板布局可配（`view.sections` / `groupBy` / `defaultSection`），默认渲染与 0.1.4 一致。
+- Phase 2：出站 webhook（HMAC-SHA256 签名、指数退避重试、SSRF 防护、默认拒绝私网目标）。
+- Phase 2 测试：`ingest-api`、`webhook`、`client-layout`、`phase2-wiring`。
 
 ## 0.1.4
 

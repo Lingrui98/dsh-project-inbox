@@ -390,6 +390,8 @@ export class Hub {
   readonly kinds: Record<string, KindSpec>
   /** 未知 kind 的告警通道；apply() 接线为宿主 logger，缺省 console.warn。 */
   onWarn: (message: string) => void = (message) => console.warn(message)
+  /** 条目事件钩子：创建/结算/告警时通知宿主（webhook 接线）；抛错不影响主流程。 */
+  onItemEvent?: (event: 'item.created' | 'item.settled' | 'item.urgent' | 'alert.created', item: HubItem) => void
   /** 已告警过的未知 kind：每种只告警一次。 */
   private warnedKinds = new Set<string>()
 
@@ -421,6 +423,15 @@ export class Hub {
       this.onWarn(`[research-hub] 未注册的消息类型 "${type}"，按 read 处理`)
     }
     return { label: type, action: 'read' }
+  }
+
+  /** 触发条目事件钩子；钩子异常一律吞掉，绝不打断收件箱主流程。 */
+  private emitItemEvent(event: 'item.created' | 'item.settled' | 'item.urgent' | 'alert.created', item: HubItem): void {
+    try {
+      this.onItemEvent?.(event, item)
+    } catch {
+      /* 钩子（如 webhook 投递）失败不影响条目本身 */
+    }
   }
 
   /** 只读数据面（面板载荷组装用）。 */
@@ -845,6 +856,7 @@ export class Hub {
   }
 
   async addItem(input: {
+    /** 外部投递的条目没有会话，传空字符串；此时不做会话归因与标题读取。 */
     sessionId: string
     type: HubItem['type']
     title: string
@@ -857,18 +869,23 @@ export class Hub {
   }): Promise<HubItem> {
     let projectId = input.projectId
     if (projectId === undefined) {
-      projectId = (await this.bindFor(input.sessionId)).projectId
-      // 子 agent 没有自己的归属时，归到父会话的项目
-      if (projectId === null) {
-        const parent = await this.parentOf(input.sessionId)
-        if (parent) projectId = (await this.bindFor(parent)).projectId
+      if (input.sessionId) {
+        projectId = (await this.bindFor(input.sessionId)).projectId
+        // 子 agent 没有自己的归属时，归到父会话的项目
+        if (projectId === null) {
+          const parent = await this.parentOf(input.sessionId)
+          if (parent) projectId = (await this.bindFor(parent)).projectId
+        }
+      } else {
+        // 无会话条目（外部投递）：未显式指定项目时进未分配收件箱
+        projectId = null
       }
     }
     const item: HubItem = {
       id: randomUUID(),
       projectId,
       sessionId: input.sessionId,
-      sessionTitle: await this.sessionTitle(input.sessionId),
+      sessionTitle: input.sessionId ? await this.sessionTitle(input.sessionId) : '',
       type: input.type,
       title: input.title.slice(0, 200),
       body: (input.body ?? '').slice(0, 4000),
@@ -883,6 +900,9 @@ export class Hub {
     }
     this.store.data.items.push(item)
     this.store.touch()
+    this.emitItemEvent('item.created', item)
+    if (item.priority === 'urgent') this.emitItemEvent('item.urgent', item)
+    if (item.type === 'alert') this.emitItemEvent('alert.created', item)
     return item
   }
 
@@ -936,6 +956,7 @@ export class Hub {
     item.settledAt = Date.now()
     if (answerText !== undefined) item.answerText = answerText.slice(0, 4000)
     this.store.touch()
+    this.emitItemEvent('item.settled', item)
     return item
   }
 
@@ -1213,6 +1234,8 @@ export class Hub {
       this.settleItem(itemId, 'answered', text)
       return { via: 'answer' }
     }
+    // 外部投递的条目没有会话，回复无处可去；由面板忽略或直接处理
+    if (!item.sessionId) throw new Error('该消息来自外部投递，没有会话可以回复；请直接处理或忽略')
     await this.promptSession(item.sessionId, text)
     this.settleItem(itemId, 'answered', text)
     return { via: 'prompt' }
