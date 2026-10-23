@@ -174,6 +174,10 @@ BROWSER_TEST_MODULE_ROOT=/path/to/package.json node scripts/social-preview.mjs
 
 需要先执行 `npm run build:client`，并准备一个含 `react`、`react-dom`、`esbuild`、`playwright-core` 的环境。
 
+## 社区
+
+本项目认可并链接 [LINUX DO](https://linux.do) 社区。
+
 ## License
 
 [BSD-3-Clause](LICENSE)。

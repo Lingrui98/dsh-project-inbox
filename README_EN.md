@@ -174,6 +174,10 @@ BROWSER_TEST_MODULE_ROOT=/path/to/package.json node scripts/social-preview.mjs
 
 Run `npm run build:client` first and point it at a project with `react`, `react-dom`, `esbuild` and `playwright-core`.
 
+## Community
+
+This project recognizes and links to the [LINUX DO](https://linux.do) community.
+
 ## License
 
 [BSD-3-Clause](LICENSE).
