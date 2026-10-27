@@ -127,10 +127,11 @@ test('损坏文件不迁移不备份，从空开始且原文件保留', () => {
 
 // ── kinds 注册表 ────────────────────────────────────────────────────────────
 
-test('内置三类行为不变：默认注册表与 0.1.4 语义一致', () => {
+test('内置四类：默认注册表与原语义一致，并新增只读通报', () => {
   assert.deepEqual(DEFAULT_KINDS, {
     question: { label: '待回答', action: 'answer', postable: true },
     deliverable: { label: '待查收', action: 'ack', postable: true },
+    note: { label: '通报', action: 'read', postable: true },
     alert: { label: '中断', action: 'inspect', postable: false },
   })
   // 中断由宿主产生：默认不允许 agent 伪造；配置可显式放开
@@ -149,7 +150,7 @@ test('resolveKinds：配置覆盖内置条目、新增自定义类型、非法�
     '': { label: '空键', action: 'read' },
   })
   assert.deepEqual(resolved.question, { label: '问题', action: 'answer', postable: true }, '空 action 回落到内置值并保留 postable')
-  assert.deepEqual(resolved.note, { label: '备忘', action: 'read' })
+  assert.deepEqual(resolved.note, { label: '备忘', action: 'read', postable: true }, '覆盖内置 note 时沿用可投递标记')
   assert.deepEqual(resolved.broken, { label: '坏条目', action: 'read' }, '未知 action 回落为 read')
   assert.equal(resolved[''], undefined, '空键被跳过')
   assert.deepEqual(resolved.deliverable, DEFAULT_KINDS.deliverable)
@@ -162,21 +163,22 @@ test('未知 kind 容错：kindSpec 回落 read 且每种类型只告警一次',
   const warnings = []
   hub.onWarn = (message) => warnings.push(message)
 
-  const spec = hub.kindSpec('note')
-  assert.deepEqual(spec, { label: 'note', action: 'read' })
+  const spec = hub.kindSpec('memo')
+  assert.deepEqual(spec, { label: 'memo', action: 'read' })
   assert.equal(warnings.length, 1)
-  assert.match(warnings[0], /note/)
+  assert.match(warnings[0], /memo/)
 
-  hub.kindSpec('note')
-  hub.kindSpec('note')
+  hub.kindSpec('memo')
+  hub.kindSpec('memo')
   assert.equal(warnings.length, 1, '同一未知类型只告警一次')
 
   hub.kindSpec('ghost')
   assert.equal(warnings.length, 2, '另一种未知类型再告警一次')
 
-  // 已注册类型不告警；内置三类原样返回
+  // 已注册类型不告警；内置四类原样返回
   assert.deepEqual(hub.kindSpec('question'), DEFAULT_KINDS.question)
   assert.deepEqual(hub.kindSpec('deliverable'), DEFAULT_KINDS.deliverable)
+  assert.deepEqual(hub.kindSpec('note'), DEFAULT_KINDS.note)
   assert.deepEqual(hub.kindSpec('alert'), DEFAULT_KINDS.alert)
   assert.equal(warnings.length, 2)
 })
@@ -342,7 +344,7 @@ test('apply()：hub_post 按注册表校验，面板保留 type 并附 kind，�
     const panel = await callApi(handler, 'panel')
     assert.equal(panel.json.ok, true)
     // 面板携带注册表；note 已注册，ghost 未注册
-    assert.deepEqual(panel.json.value.kinds.note, { label: '备忘', action: 'read' })
+    assert.deepEqual(panel.json.value.kinds.note, { label: '备忘', action: 'read', postable: true })
     assert.deepEqual(panel.json.value.kinds.question, DEFAULT_KINDS.question)
     const items = panel.json.value.items
     const byType = Object.fromEntries(items.map((it) => [it.type, it]))
@@ -350,7 +352,7 @@ test('apply()：hub_post 按注册表校验，面板保留 type 并附 kind，�
     assert.equal(byType.question.type, 'question')
     assert.deepEqual(byType.question.kind, DEFAULT_KINDS.question)
     assert.deepEqual(byType.deliverable.kind, DEFAULT_KINDS.deliverable)
-    assert.deepEqual(byType.note.kind, { label: '备忘', action: 'read' })
+    assert.deepEqual(byType.note.kind, { label: '备忘', action: 'read', postable: true })
     assert.deepEqual(byType.ghost.kind, { label: 'ghost', action: 'read' }, '未注册类型按 read 展示')
 
     // 未注册类型只在首次显示时告警一次
@@ -362,7 +364,7 @@ test('apply()：hub_post 按注册表校验，面板保留 type 并附 kind，�
     // kinds 快照已落盘（防抖 150ms，等待后读文件）
     await delay(250)
     const written = JSON.parse(readFileSync(applyStoreFile, 'utf8'))
-    assert.deepEqual(written.kinds.note, { label: '备忘', action: 'read' })
+    assert.deepEqual(written.kinds.note, { label: '备忘', action: 'read', postable: true })
     assert.equal(written.version, 2)
   } finally {
     for (const dispose of [...fake.effects].reverse()) {

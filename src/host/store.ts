@@ -14,7 +14,7 @@ export interface Project {
 }
 
 /**
- * 消息类型：内置 question / deliverable / alert，也可经 kinds 配置注册自定义类型。
+ * 消息类型：内置 question / deliverable / note / alert，也可经 kinds 配置注册自定义类型。
  * 放宽为 string 后，历史数据里出现的任何类型都能原样加载与展示。
  */
 export type ItemType = string
@@ -32,10 +32,14 @@ export interface KindSpec {
   postable?: boolean
 }
 
-/** 内置三类：未配置 kinds 时行为与 0.1.4 完全一致，也是 v1 → v2 迁移补的默认值。 */
+/**
+ * 内置四类：未配置 kinds 时行为与 0.1.4 完全一致，也是 v1 → v2 迁移补的默认值。
+ * note 承载会话之间的通报：只作记录，面板不出应答控件，避免被当成待用户回答的问题。
+ */
 export const DEFAULT_KINDS: Record<string, KindSpec> = {
   question: { label: '待回答', action: 'answer', postable: true },
   deliverable: { label: '待查收', action: 'ack', postable: true },
+  note: { label: '通报', action: 'read', postable: true },
   // 中断告警由宿主在 turn/end 时产生，agent 不能经 hub_post 伪造；配置可显式放开。
   alert: { label: '中断', action: 'inspect', postable: false },
 }

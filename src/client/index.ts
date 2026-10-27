@@ -64,7 +64,7 @@ function setReturnTarget(v: { sessionId: string } | null): void {
 
 // ── 类型（与 host 侧面板载荷对齐） ────────────────────────────────────────────
 
-interface Counts { questions: number; deliverables: number; urgent: number; alerts: number }
+interface Counts { questions: number; deliverables: number; urgent: number; alerts: number; notes?: number }
 interface SessionView {
   id: string
   title: string
@@ -90,7 +90,9 @@ interface HubItemView {
   sessionTitle: string
   sessionRunning: boolean
   sessionVisible: boolean
-  type: 'question' | 'deliverable' | 'alert'
+  type: string
+  /** host 按 kinds 注册表给出的显示约定；自定义类型（如 note）据此渲染标签与控件。 */
+  kind?: { label: string; action: 'answer' | 'ack' | 'inspect' | 'read'; postable?: boolean }
   title: string
   body: string
   priority: 'normal' | 'urgent'
@@ -386,12 +388,17 @@ function ItemCard(props: { item: HubItemView; now: number; onChanged: () => void
   const sessionOnly = pending && item.source === 'auq' && item.answerable !== true
   const withOptions = pending && !sessionOnly && item.source === 'auq' && questions.some((q) => (q.options?.length ?? 0) > 0)
   const isAlert = item.type === 'alert'
+  // 内置类型沿用固定文案；自定义类型（如 note 通报）用注册表 label 与 action。
+  const isNotice = item.type !== 'question' && item.type !== 'alert' && item.type !== 'deliverable'
+  const kindAction = item.kind?.action ?? (item.type === 'question' ? 'answer' : isAlert ? 'inspect' : item.type === 'deliverable' ? 'ack' : 'read')
   // 中断告警的回复会继续该会话，所以标语和 placeholder 都与问题、交付区分。
-  const typeLabel = item.type === 'question'
-    ? pending ? T.typeQuestionPending : T.typeQuestion
-    : isAlert
-      ? pending ? T.typeAlertPending : T.typeAlert
-      : pending ? T.typeDeliverablePending : T.typeDeliverable
+  const typeLabel = isNotice
+    ? item.kind?.label ?? T.typeNotice
+    : item.type === 'question'
+      ? pending ? T.typeQuestionPending : T.typeQuestion
+      : isAlert
+        ? pending ? T.typeAlertPending : T.typeAlert
+        : pending ? T.typeDeliverablePending : T.typeDeliverable
 
   const run = async (fn: () => Promise<unknown>) => {
     setBusy(true)
@@ -436,8 +443,8 @@ function ItemCard(props: { item: HubItemView; now: number; onChanged: () => void
     })
   }
 
-  const typeIcon = item.type === 'question' ? 'question' : isAlert ? 'warning' : 'package'
-  const typeColor = item.type === 'question' ? C.warn : isAlert ? C.err : C.ok
+  const typeIcon = isNotice ? 'inbox' : item.type === 'question' ? 'question' : isAlert ? 'warning' : 'package'
+  const typeColor = isNotice ? C.brand : item.type === 'question' ? C.warn : isAlert ? C.err : C.ok
   const children: React.ReactNode[] = [
     h('div', { key: 'type', style: { ...S.row, gap: 6, marginBottom: 9 } }, [
       h(Icon, { key: 'icon', name: typeIcon, size: 14, color: typeColor }),
@@ -526,6 +533,22 @@ function ItemCard(props: { item: HubItemView; now: number; onChanged: () => void
         error ? h('span', { key: 'err', role: 'alert', style: { color: C.err, fontSize: 12 } }, error) : null,
       ]),
     )
+  } else if (pending && kindAction === 'read') {
+    // 只读类型（如 note 通报）：用户不需要回答，不出输入框与查收按钮。
+    children.push(
+      h('div', { key: 'hint', style: S.body2 }, T.noticeHint),
+      h('div', { key: 'actions', className: 'rh-message-actions', style: { ...S.row, marginTop: 8 } }, [
+        h('button', {
+           key: 'jump', style: { ...S.btn, opacity: busy ? 0.55 : 1 }, disabled: busy, onClick: () => props.onJump(item.sessionId),
+           ...buttonHover(),
+         }, T.jumpToSession),
+        h('button', {
+           key: 'dismiss', className: 'rh-subtle-action', style: { ...S.btn, color: C.text3, opacity: busy ? 0.55 : 1, marginLeft: 'auto' }, disabled: busy,
+           onClick: () => run(() => api('dismiss', { itemId: item.id })),
+         }, T.dismiss),
+        error ? h('span', { key: 'err', role: 'alert', style: { color: C.err, fontSize: 12 } }, error) : null,
+      ]),
+    )
   } else if (pending) {
     children.push(
       h('textarea', {
@@ -554,7 +577,7 @@ function ItemCard(props: { item: HubItemView; now: number; onChanged: () => void
              ...buttonHover(tint(C.brand, 18), tint(C.brand, 28), tint(C.brand, 45), tint(C.brand, 65)),
            }, busy ? T.submitting : T.submitOptions)
           : h('button', { key: 'send', style: { ...S.btnPrimary, opacity: busy || !canSubmitText ? 0.5 : 1 }, disabled: busy || !canSubmitText, onClick: submitText, ...buttonHover(tint(C.brand, 18), tint(C.brand, 28), tint(C.brand, 45), tint(C.brand, 65)) }, busy ? T.sending : T.reply),
-        item.type === 'deliverable'
+        kindAction === 'ack'
           ? h('button', {
              key: 'ack', style: { ...S.btn, color: C.text, background: tint(C.ok, 6), borderColor: tint(C.ok, 32), opacity: busy ? 0.55 : 1 }, disabled: busy,
              onClick: () => run(() => api('ack', { itemId: item.id })),
@@ -796,6 +819,8 @@ function HomeInbox(props: {
   const urgent = props.counts?.urgent ?? pending.filter((item) => item.priority === 'urgent').length
   const questions = props.counts?.questions ?? pending.filter((item) => item.type === 'question').length
   const alerts = props.counts?.alerts ?? pending.filter((item) => item.type === 'alert').length
+  const notes = props.counts?.notes ?? pending.filter((item) => item.type !== 'question' && item.type !== 'deliverable' && item.type !== 'alert').length
+  const deliverables = Math.max(total - questions - alerts - notes, 0)
   const tone = urgent > 0 || alerts > 0 ? C.err : HUES[0]
   return h('section', {
     'aria-label': T.inboxAriaLabel, className: 'rh-inbox',
@@ -818,7 +843,8 @@ function HomeInbox(props: {
       urgent > 0 ? pill(T.pillUrgentCount(urgent), C.err, 'urgent') : null,
       alerts > 0 ? pill(T.pillAlertsCount(alerts), C.err, 'alerts') : null,
       questions > 0 ? pill(T.pillQuestionsCount(questions), C.warn, 'questions') : null,
-      total - questions - alerts > 0 ? pill(T.pillDeliverablesCount(total - questions - alerts), C.ok, 'deliverables') : null,
+      deliverables > 0 ? pill(T.pillDeliverablesCount(deliverables), C.ok, 'deliverables') : null,
+      notes > 0 ? pill(T.pillNotesCount(notes), C.text2, 'notes') : null,
       h('button', {
         key: 'open', type: 'button', style: { ...S.btn, padding: '8px 13px', borderColor: tint(tone, 28), background: tint(tone, 7) }, onClick: props.onOpen, ...buttonHover(tint(tone, 7), tint(tone, 13), tint(tone, 28), tint(tone, 45)),
       }, total > 3 ? T.viewAll(total) : T.openInbox),
@@ -959,12 +985,13 @@ function ProjectCard(props: {
       }, props.name),
       h('span', { key: 'arrow', className: 'rh-project-arrow', 'aria-hidden': true, style: { color: C.text2, display: 'inline-flex' } }, h(Icon, { name: 'arrow', size: 15 })),
     ]),
-    counts.questions + counts.deliverables + (counts.alerts ?? 0) > 0
+    counts.questions + counts.deliverables + (counts.alerts ?? 0) + (counts.notes ?? 0) > 0
       ? h('div', { key: 'counts', style: S.row }, [
         counts.urgent > 0 ? pill(T.pillUrgentCount(counts.urgent), C.err, 'u') : null,
         (counts.alerts ?? 0) > 0 ? pill(T.pillAlertsCount(counts.alerts), C.err, 'a') : null,
         counts.questions > 0 ? pill(T.cardPillQuestions(counts.questions), C.warn, 'q') : null,
         counts.deliverables > 0 ? pill(T.cardPillDeliverables(counts.deliverables), C.ok, 'd') : null,
+        (counts.notes ?? 0) > 0 ? pill(T.cardPillNotes(counts.notes ?? 0), C.text2, 'n') : null,
       ])
       : null,
     // 项目卡只露出简短摘要，避免同一消息出现两份独立回复草稿。
@@ -976,9 +1003,9 @@ function ProjectCard(props: {
         }, [
           h(Icon, {
             key: 'icon',
-            name: item.type === 'question' ? 'question' : item.type === 'alert' ? 'warning' : 'package',
+            name: item.type === 'question' ? 'question' : item.type === 'alert' ? 'warning' : item.type === 'deliverable' ? 'package' : 'inbox',
             size: 12,
-            color: item.priority === 'urgent' || item.type === 'alert' ? C.err : item.type === 'question' ? C.warn : C.ok,
+            color: item.priority === 'urgent' || item.type === 'alert' ? C.err : item.type === 'question' ? C.warn : item.type === 'deliverable' ? C.ok : C.text2,
           }),
           h('span', { key: 'title', style: { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, item.title),
         ])),
@@ -1233,8 +1260,8 @@ function HubPage(props: { ctx: any }) {
   if (selected === null) {
     const cards: React.ReactNode[] = []
     const sorted = [...data.projects].sort(
-      (a, b) => (b.counts.questions + b.counts.deliverables + b.counts.urgent * 10 + (b.counts.alerts ?? 0) * 10)
-        - (a.counts.questions + a.counts.deliverables + a.counts.urgent * 10 + (a.counts.alerts ?? 0) * 10)
+      (a, b) => (b.counts.questions + b.counts.deliverables + (b.counts.notes ?? 0) + b.counts.urgent * 10 + (b.counts.alerts ?? 0) * 10)
+        - (a.counts.questions + a.counts.deliverables + (a.counts.notes ?? 0) + a.counts.urgent * 10 + (a.counts.alerts ?? 0) * 10)
         || a.name.localeCompare(b.name) || a.id.localeCompare(b.id),
     )
     for (const p of sorted) {
@@ -1276,6 +1303,7 @@ function HubPage(props: { ctx: any }) {
           deliverables: sum.deliverables + p.counts.deliverables,
           urgent: sum.urgent + p.counts.urgent,
           alerts: (sum.alerts ?? 0) + (p.counts.alerts ?? 0),
+          notes: (sum.notes ?? 0) + (p.counts.notes ?? 0),
         }), { ...data.unassignedCounts }),
         onOpen: () => setSelected('__all__'), onChanged: load, onJump: jump,
       }),
@@ -1325,6 +1353,7 @@ function HubPage(props: { ctx: any }) {
       alerts: { tone: C.err, icon: 'warning', title: T.sectionAlerts, empty: T.emptyAlerts },
       questions: { tone: C.warn, icon: 'question', title: T.sectionPendingQuestions, empty: T.emptyQuestions },
       deliverables: { tone: C.ok, icon: 'package', title: T.sectionPendingDeliverables, empty: T.emptyDeliverables },
+      other: { tone: C.info, icon: 'inbox', title: T.sectionNotes, empty: T.emptyNotes },
       pending: { tone: C.brand, icon: 'inbox', title: T.sectionPending, empty: T.emptyPending },
       history: { tone: C.text3, icon: 'inbox', title: T.sectionHistory },
       all: { tone: C.brand, icon: 'inbox', title: T.pageTitleAll, empty: T.emptyPending },

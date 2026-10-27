@@ -664,6 +664,8 @@ function buildPanel(hub: Hub, ctx: AppContext, config: ConfigShape, alertState: 
       questions: scoped.filter((it) => it.type === 'question').length,
       deliverables: scoped.filter((it) => it.type === 'deliverable').length,
       alerts: scoped.filter((it) => it.type === 'alert').length,
+      // 会话间通报等自定义类型：既不是待回答，也不是待查收，单独计数。
+      notes: scoped.filter((it) => it.type !== 'question' && it.type !== 'deliverable' && it.type !== 'alert').length,
       urgent: scoped.filter((it) => it.priority === 'urgent').length,
     }
   }
@@ -955,9 +957,10 @@ export function apply(ctx: AppContext, config: ConfigShape): void {
     name: 'hub_post',
     description:
       '向跨会话指挥中心投递一条消息，按项目归入收件箱。' +
-      'type="question"：需要人类决策或回答、但不阻塞你继续工作的问题（紧急结构化问题请直接用 ask_user_question，会被自动镜像，不要重复投递）；' +
+      'type="question"：只用于需要用户本人决策或回答、但不阻塞你继续工作的提问；不要用它给其他会话或工作包传话（紧急结构化问题请直接用 ask_user_question，会被自动镜像，不要重复投递）；' +
+      'type="note"：给其他会话或工作包的通报、核对提醒、交接说明；只作记录，用户无需回答；' +
       'type="deliverable"：已形成且可复用的结论、报告或产物；普通进度不投递。' +
-      '人类的回复会以普通用户消息回到本会话。',
+      'question 的回复会以普通用户消息回到本会话；note 不产生回复。',
     parameters: {
       type: 'object',
       properties: {
@@ -1012,7 +1015,8 @@ export function apply(ctx: AppContext, config: ConfigShape): void {
     text: () => [
       '## 跨会话指挥中心（research-hub）',
       '',
-      '需要用户决策但不阻塞工作的事项，主动调用 hub_post(type="question")。',
+      '需要用户本人决策但不阻塞工作的事项，主动调用 hub_post(type="question")；不要用它给其他会话或工作包传话。',
+      '给其他会话或工作包的通报、核对提醒、交接说明，用 hub_post(type="note")；这类消息只作记录，用户无需回答。',
       '形成可复用的结论、报告或产物时，主动调用 hub_post(type="deliverable")；普通进度不投递。',
     ].join('\n'),
   }), 'research-hub: prompt section')
@@ -1120,6 +1124,7 @@ export function apply(ctx: AppContext, config: ConfigShape): void {
         pending: pending.length,
         questions: pending.filter((it) => it.type === 'question').length,
         alerts: pending.filter((it) => it.type === 'alert').length,
+        notes: pending.filter((it) => it.type !== 'question' && it.type !== 'deliverable' && it.type !== 'alert').length,
         urgent: pending.filter((it) => it.priority === 'urgent').length,
       }
     },

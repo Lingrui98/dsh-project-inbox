@@ -15,11 +15,12 @@
 
 export type LayoutGroupBy = 'project' | 'kind' | 'priority' | 'none'
 
-/** 分区的条目来源。alerts/questions/deliverables 只取待处理条目。 */
+/** 分区的条目来源。alerts/questions/deliverables/other 只取待处理条目。 */
 export type LayoutSectionSource =
   | 'alerts'
   | 'questions'
   | 'deliverables'
+  | 'other'
   | 'pending'
   | 'history'
   | 'all'
@@ -68,6 +69,7 @@ const KNOWN_SOURCES: readonly LayoutSectionSource[] = [
   'alerts',
   'questions',
   'deliverables',
+  'other',
   'pending',
   'history',
   'all',
@@ -78,13 +80,14 @@ const KNOWN_GROUP_BY: readonly LayoutGroupBy[] = ['project', 'kind', 'priority',
 const KNOWN_KINDS = ['question', 'deliverable', 'alert'] as const
 const KNOWN_PRIORITIES = ['normal', 'urgent'] as const
 
-/** 与 0.1.4 固定渲染等价：中断 → 待回答问题 → 待查看交付，不分组。 */
+/** 与 0.1.4 固定渲染等价：中断 → 待回答问题 → 待查看交付 → 会话间通报，不分组。 */
 export const DEFAULT_LAYOUT: LayoutConfig = {
   groupBy: 'none',
   sections: [
     { id: 'alerts', source: 'alerts', order: 0 },
     { id: 'questions', source: 'questions', order: 1 },
     { id: 'deliverables', source: 'deliverables', order: 2 },
+    { id: 'notes', source: 'other', order: 3 },
   ],
 }
 
@@ -172,6 +175,8 @@ function sourceMatches(source: LayoutSectionSource, item: LayoutItem): boolean {
     case 'alerts': return pending && item.type === 'alert'
     case 'questions': return pending && item.type === 'question'
     case 'deliverables': return pending && item.type === 'deliverable'
+    // 会话间通报等自定义类型：只排除三种内置类型，其余待处理条目归入此分区。
+    case 'other': return pending && item.type !== 'alert' && item.type !== 'question' && item.type !== 'deliverable'
     case 'pending': return pending
     case 'history': return !pending
     case 'all': return true

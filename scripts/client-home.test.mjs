@@ -266,7 +266,7 @@ test('all-pending view puts interruption alerts before questions and deliveries'
   nodes(home).find((node) => node.type === ui.HomeInbox).props.onOpen()
   const all = ui.page(data({ items })).page
   const labels = nodes(all).filter((node) => node.type === 'h2').map((node) => text(children(node)[1]))
-  assert.deepEqual(labels, ['会话中断', '待回答问题', '待查看交付'])
+  assert.deepEqual(labels, ['会话中断', '待回答问题', '待查看交付', '会话间通报'])
   const cards = nodes(all).filter((node) => typeof node.type === 'function' && node.type.name === 'ItemCard')
   assert.deepEqual(cards.map((node) => node.props.item.id), ['alert-1', 'q-1', 'd-1'])
   // 复原模块级视图，避免影响后续用例。

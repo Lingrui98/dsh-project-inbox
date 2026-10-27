@@ -38,7 +38,9 @@
 
 ## 消息类型
 
-内置三类：`question`（待回答）、`deliverable`（待查收）、`alert`（中断）。可以覆盖文案与处理动作，也可以新增自定义类型：
+内置四类：`question`（待回答）、`deliverable`（待查收）、`note`（通报）、`alert`（中断）。
+`question` 只用于需要用户本人回答的问题；会话之间的通报用 `note`，面板只显示记录，不出应答控件。
+可以覆盖文案与处理动作，也可以新增自定义类型：
 
 ```yaml
     kinds:
@@ -49,7 +51,7 @@
         label: 待查收
         action: ack
       note:
-        label: 备忘
+        label: 通报
         action: read
         postable: true
 ```

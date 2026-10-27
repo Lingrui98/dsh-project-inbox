@@ -23,13 +23,14 @@ function item(id, extra = {}) {
   return { id, type: 'question', priority: 'normal', status: 'pending', projectId: 'p1', ...extra }
 }
 
-test('default layout matches the fixed 0.1.4 rendering: alerts, questions, deliverables', () => {
+test('default layout matches the fixed rendering: alerts, questions, deliverables, notes', () => {
   assert.deepEqual(DEFAULT_LAYOUT, {
     groupBy: 'none',
     sections: [
       { id: 'alerts', source: 'alerts', order: 0 },
       { id: 'questions', source: 'questions', order: 1 },
       { id: 'deliverables', source: 'deliverables', order: 2 },
+      { id: 'notes', source: 'other', order: 3 },
     ],
   })
 })

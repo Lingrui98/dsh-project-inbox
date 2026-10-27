@@ -33,6 +33,9 @@ export interface HubStrings {
   typeAlert: string
   typeDeliverablePending: string
   typeDeliverable: string
+  /** 会话间通报等自定义 kind 的落款：直接用注册表 label，此处是缺省文案。 */
+  typeNotice: string
+  noticeHint: string
   pillUrgent: string
   pillSessionQuestion: string
   pillSessionInterrupt: string
@@ -84,6 +87,7 @@ export interface HubStrings {
   pillAlertsCount(n: number): string
   pillQuestionsCount(n: number): string
   pillDeliverablesCount(n: number): string
+  pillNotesCount(n: number): string
   viewAll(total: number): string
   openInbox: string
   unassignedName: string
@@ -94,6 +98,7 @@ export interface HubStrings {
   openProjectTitle: string
   cardPillQuestions(n: number): string
   cardPillDeliverables(n: number): string
+  cardPillNotes(n: number): string
   cardSessions(count: number, capped: boolean): string
   cardRunning(n: number): string
   unassignedNote: string
@@ -125,6 +130,7 @@ export interface HubStrings {
   sectionAlerts: string
   sectionPendingQuestions: string
   sectionPendingDeliverables: string
+  sectionNotes: string
   sectionPending: string
   sectionHistory: string
   sectionUnassignedSessions: string
@@ -133,6 +139,7 @@ export interface HubStrings {
   emptyAlerts: string
   emptyQuestions: string
   emptyDeliverables: string
+  emptyNotes: string
   emptyUnassignedItems: string
   emptyPending: string
   historyToggle(count: number): string
@@ -173,6 +180,8 @@ export const zh: HubStrings = {
   typeAlert: '中断',
   typeDeliverablePending: '待查收',
   typeDeliverable: '交付',
+  typeNotice: '通报',
+  noticeHint: '该条为会话间通报，不需要你回答；需要跟进请到来源会话。',
   pillUrgent: '紧急',
   pillSessionQuestion: '会话提问',
   pillSessionInterrupt: '会话中断',
@@ -224,6 +233,7 @@ export const zh: HubStrings = {
   pillAlertsCount: (n) => `${n} 中断`,
   pillQuestionsCount: (n) => `${n} 待回答`,
   pillDeliverablesCount: (n) => `${n} 待查收`,
+  pillNotesCount: (n) => `${n} 通报`,
   viewAll: (total) => `查看全部 ${total} 条`,
   openInbox: '打开收件箱',
   unassignedName: '未分配',
@@ -234,6 +244,7 @@ export const zh: HubStrings = {
   openProjectTitle: '点击进入项目详情',
   cardPillQuestions: (n) => `${n} 问`,
   cardPillDeliverables: (n) => `${n} 交付`,
+  cardPillNotes: (n) => `${n} 通报`,
   cardSessions: (count, capped) => `${count} 个会话${capped ? ' · 显示最近 3 个' : ''}`,
   cardRunning: (n) => `${n} 运行中`,
   unassignedNote: '会话归属可在详情页调整',
@@ -264,6 +275,7 @@ export const zh: HubStrings = {
   sectionAlerts: '会话中断',
   sectionPendingQuestions: '待回答问题',
   sectionPendingDeliverables: '待查看交付',
+  sectionNotes: '会话间通报',
   sectionPending: '待处理',
   sectionHistory: '历史记录',
   sectionUnassignedSessions: '未分配会话',
@@ -272,6 +284,7 @@ export const zh: HubStrings = {
   emptyAlerts: '没有会话中断',
   emptyQuestions: '没有待回答的问题',
   emptyDeliverables: '没有待查看的交付',
+  emptyNotes: '没有通报',
   emptyUnassignedItems: '没有未分配的消息',
   emptyPending: '没有待处理的消息',
   historyToggle: (count) => `历史记录（${count}）`,
@@ -312,6 +325,8 @@ export const en: HubStrings = {
   typeAlert: 'Interrupted',
   typeDeliverablePending: 'To review',
   typeDeliverable: 'Deliverable',
+  typeNotice: 'Note',
+  noticeHint: 'This is a cross-session note; no answer is needed. Follow up in the source session if required.',
   pillUrgent: 'Urgent',
   pillSessionQuestion: 'Session question',
   pillSessionInterrupt: 'Session interrupted',
@@ -363,6 +378,7 @@ export const en: HubStrings = {
   pillAlertsCount: (n) => `${n} interrupted`,
   pillQuestionsCount: (n) => `${n} to answer`,
   pillDeliverablesCount: (n) => `${n} to review`,
+  pillNotesCount: (n) => `${n} note${n === 1 ? '' : 's'}`,
   viewAll: (total) => `View all ${total}`,
   openInbox: 'Open inbox',
   unassignedName: 'Unassigned',
@@ -373,6 +389,7 @@ export const en: HubStrings = {
   openProjectTitle: 'Click to open project details',
   cardPillQuestions: (n) => `${n} question${n === 1 ? '' : 's'}`,
   cardPillDeliverables: (n) => `${n} deliverable${n === 1 ? '' : 's'}`,
+  cardPillNotes: (n) => `${n} note${n === 1 ? '' : 's'}`,
   cardSessions: (count, capped) => `${count} session${count === 1 ? '' : 's'}${capped ? ' · showing latest 3' : ''}`,
   cardRunning: (n) => `${n} running`,
   unassignedNote: 'Session assignment can be adjusted on the detail page',
@@ -403,6 +420,7 @@ export const en: HubStrings = {
   sectionAlerts: 'Session interruptions',
   sectionPendingQuestions: 'Pending questions',
   sectionPendingDeliverables: 'Deliveries to review',
+  sectionNotes: 'Cross-session notes',
   sectionPending: 'Pending',
   sectionHistory: 'History',
   sectionUnassignedSessions: 'Unassigned sessions',
@@ -411,6 +429,7 @@ export const en: HubStrings = {
   emptyAlerts: 'No session interruptions',
   emptyQuestions: 'No pending questions',
   emptyDeliverables: 'No deliveries to review',
+  emptyNotes: 'No notes',
   emptyUnassignedItems: 'No unassigned messages',
   emptyPending: 'No pending messages',
   historyToggle: (count) => `History (${count})`,
