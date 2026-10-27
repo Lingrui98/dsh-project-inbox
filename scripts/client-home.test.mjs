@@ -315,3 +315,26 @@ test('session assignment uses the same in-panel new project dialog', () => {
   select.props.onChange({ target: { value: '__new__' } })
   assert.equal(opened, 1)
 })
+
+test('note items show the 通报 label, no reply box, and a separate 通报 count', () => {
+  const ui = harness()
+  const note = item('n-1', {
+    type: 'note', kind: { label: '通报', action: 'read', postable: true },
+    sessionId: 's4', sessionTitle: '会话 4',
+  })
+  const inbox = ui.HomeInbox({
+    items: [note], projects: [], now: 10000, total: 1,
+    counts: { questions: 0, deliverables: 0, urgent: 0, alerts: 0, notes: 1 },
+    onOpen: noop, onChanged: noop, onJump: noop,
+  })
+  assert.match(text(inbox), /1 通报/)
+  assert.doesNotMatch(text(inbox), /1 待查收/)
+  const card = ui.ItemCard({ item: note, now: 10000, onChanged: noop, onJump: noop })
+  assert.match(text(card), /通报/)
+  assert.match(text(card), /不需要你回答/)
+  assert.equal(nodes(card).some((node) => node.type === 'textarea'), false, '只读类型不出回复框')
+  const buttons = nodes(card).filter((node) => node.type === 'button').map((node) => text(node))
+  assert.ok(buttons.includes('忽略'))
+  assert.equal(buttons.includes('查收'), false)
+  assert.equal(buttons.includes('回复'), false)
+})
