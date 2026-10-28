@@ -11,8 +11,9 @@ const root = fileURLToPath(new URL('..', import.meta.url))
 
 test('release tarball contains a complete, portable, loadable DSH bundle', async () => {
   const temp = mkdtempSync(join(tmpdir(), 'rhub-package-test-'))
-  const packs = JSON.parse(execFileSync('npm', ['pack', '--json', '--ignore-scripts', '--pack-destination', temp], { cwd: root, encoding: 'utf8' }))
-  const pack = packs[0]
+  const packed = JSON.parse(execFileSync('npm', ['pack', '--json', '--ignore-scripts', '--pack-destination', temp], { cwd: root, encoding: 'utf8' }))
+  // npm 12 returns an object keyed by package name; older versions return an array.
+  const pack = Array.isArray(packed) ? packed[0] : Object.values(packed)[0]
   const names = pack.files.map((entry) => entry.path)
   for (const name of ['package.json', 'cordis.patch.yml', 'LICENSE', 'README.md', 'lib/index.js', 'lib/host/core.js', 'lib/client.js']) assert.ok(names.includes(name), `Missing package file: ${name}`)
   for (const name of names) {
