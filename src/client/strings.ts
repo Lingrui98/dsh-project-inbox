@@ -110,6 +110,8 @@ export interface HubStrings {
   rescan: string
   newProjectPrompt: string
   newProject: string
+  newProjectCancel: string
+  newProjectConfirm: string
   overviewTitle: string
   overviewDesc(projects: number, sessions: number, running: number): string
   /** 首字符是空格：原实现里图标与文字之间的间隔写在字符串内。 */
@@ -248,6 +250,8 @@ export const zh: HubStrings = {
   rescan: '重新扫描',
   newProjectPrompt: '新项目名称（例如 sway-paper）：',
   newProject: '新建项目',
+  newProjectCancel: '取消',
+  newProjectConfirm: '创建项目',
   overviewTitle: '项目总览',
   overviewDesc: (projects, sessions, running) => `${projects} 个项目 · ${sessions} 个会话${running > 0 ? ` · ${running} 个运行中` : ''}`,
   trashButton: (count) => ` 回收站（${count}）`,
@@ -385,6 +389,8 @@ export const en: HubStrings = {
   rescan: 'Rescan',
   newProjectPrompt: 'New project name (e.g. sway-paper):',
   newProject: 'New project',
+  newProjectCancel: 'Cancel',
+  newProjectConfirm: 'Create project',
   overviewTitle: 'Projects overview',
   overviewDesc: (projects, sessions, running) => `${projects} projects · ${sessions} sessions${running > 0 ? ` · ${running} running` : ''}`,
   trashButton: (count) => ` Trash (${count})`,

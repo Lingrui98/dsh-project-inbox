@@ -15,7 +15,7 @@ function harness() {
     useReducer: (_reducer, initial) => [initial, () => {}],
   }
   const source = readFileSync(new URL('../src/client/index.ts', import.meta.url), 'utf8')
-    + '\nexport const __test = { ItemCard, SessionPreview, HomeInbox, ProjectCard, HubPage, HubReturnBar, setReturnTarget };\n'
+    + '\nexport const __test = { ItemCard, SessionPreview, HomeInbox, ProjectCard, NewProjectDialog, SessionBindRow, HubPage, HubReturnBar, setReturnTarget };\n'
   const { outputText } = ts.transpileModule(source, {
     compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2023, esModuleInterop: true },
   })
@@ -43,6 +43,17 @@ function harness() {
   const components = exports.__test
   return {
     ...components,
+    render(component, props, states = []) {
+      let hook = 0
+      const changes = []
+      React.useState = (initial) => {
+        const index = hook++
+        return [index < states.length ? states[index] : initial, (value) => changes.push({ index, value })]
+      }
+      const node = component(props)
+      React.useState = (initial) => [initial, () => {}]
+      return { node, changes }
+    },
     page(data) {
       let hook = 0
       const changes = []
@@ -260,4 +271,47 @@ test('all-pending view puts interruption alerts before questions and deliveries'
   assert.deepEqual(cards.map((node) => node.props.item.id), ['alert-1', 'q-1', 'd-1'])
   // 复原模块级视图，避免影响后续用例。
   nodes(all).find((node) => node.type === 'button' && node.props.key === 'back').props.onClick()
+})
+
+test('new project button opens the in-panel dialog without a native prompt', () => {
+  const ui = harness()
+  const { page, changes } = ui.page(data())
+  const button = nodes(page).find((node) => node.type === 'button' && node.props.key === 'new')
+  assert.ok(button)
+  button.props.onClick()
+  assert.equal(changes.length, 1)
+  assert.deepEqual(Object.keys(changes[0]), [])
+})
+
+test('new project dialog submits a trimmed name and supports cancellation', async () => {
+  const ui = harness()
+  const names = []
+  let closed = 0
+  const { node } = ui.render(ui.NewProjectDialog, {
+    bindSession: false,
+    onClose: () => { closed += 1 },
+    onSubmit: async (name) => { names.push(name) },
+  }, ['  sway-paper  ', false, ''])
+  const form = nodes(node).find((node) => node.type === 'form')
+  assert.equal(form.props.role, 'dialog')
+  assert.equal(form.props['aria-modal'], true)
+  const input = nodes(node).find((node) => node.type === 'input')
+  assert.equal(input.props.autoFocus, true)
+  nodes(node).find((node) => node.type === 'button' && node.props.key === 'cancel').props.onClick()
+  assert.equal(closed, 1)
+  form.props.onSubmit({ preventDefault() {} })
+  await new Promise((resolve) => setImmediate(resolve))
+  assert.deepEqual(names, ['sway-paper'])
+})
+
+test('session assignment uses the same in-panel new project dialog', () => {
+  const ui = harness()
+  let opened = 0
+  const row = ui.SessionBindRow({
+    session: session('target'), projects: [], onChanged: noop, onJump: noop,
+    onNewProject: () => { opened += 1 },
+  })
+  const select = nodes(row).find((node) => node.type === 'select')
+  select.props.onChange({ target: { value: '__new__' } })
+  assert.equal(opened, 1)
 })

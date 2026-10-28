@@ -164,7 +164,7 @@ const C = {
 
 const S: Record<string, React.CSSProperties> = {
   root: {
-    display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0,
+    display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0, position: 'relative',
     color: C.text, background: C.base, fontSize: 13, isolation: 'isolate',
   },
   header: {
@@ -601,9 +601,81 @@ function ItemCard(props: { item: HubItemView; now: number; onChanged: () => void
   return h('div', { className: 'rh-message', style: shellStyle }, children)
 }
 
+// ── 新建项目对话框（桌面与 Web 共用，不依赖 window.prompt） ───────────────────
+
+function NewProjectDialog(props: {
+  bindSession: boolean
+  onClose: () => void
+  onSubmit: (name: string) => Promise<void>
+}) {
+  const [name, setName] = React.useState('')
+  const [busy, setBusy] = React.useState(false)
+  const [error, setError] = React.useState('')
+  const trimmed = name.trim()
+
+  const submit = async () => {
+    if (!trimmed || busy) return
+    setBusy(true)
+    setError('')
+    try {
+      await props.onSubmit(trimmed)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+      setBusy(false)
+    }
+  }
+
+  return h('div', {
+    className: 'rh-dialog-backdrop',
+    style: {
+      position: 'absolute', inset: 0, zIndex: 30, display: 'flex', alignItems: 'center', justifyContent: 'center',
+      padding: 24, background: tint(C.text, 18), backdropFilter: 'blur(3px)',
+    },
+    onMouseDown: (e: any) => {
+      if (!busy && e.target === e.currentTarget) props.onClose()
+    },
+  }, h('form', {
+    role: 'dialog', 'aria-modal': true, 'aria-labelledby': 'rh-new-project-title', 'aria-busy': busy,
+    style: {
+      width: 'min(420px, 100%)', padding: 22, borderRadius: 16, color: C.text, background: C.surface,
+      border: `1px solid ${tint(C.text2, 14)}`, boxShadow: `0 24px 70px ${tint(C.text, 18)}`,
+    },
+    onSubmit: (e: any) => { e.preventDefault(); void submit() },
+    onKeyDown: (e: any) => {
+      if (e.key === 'Escape' && !busy) {
+        e.preventDefault()
+        e.stopPropagation()
+        props.onClose()
+      }
+    },
+  }, [
+    h('h2', { key: 'title', id: 'rh-new-project-title', style: { margin: 0, fontSize: 18, fontWeight: 650, lineHeight: 1.4 } }, T.newProject),
+    h('label', { key: 'label', htmlFor: 'rh-new-project-name', style: { display: 'block', marginTop: 14, color: C.text2, fontSize: 12, lineHeight: 1.6 } },
+      props.bindSession ? T.newProjectPromptBind : T.newProjectPrompt),
+    h('input', {
+      key: 'input', id: 'rh-new-project-name', type: 'text', value: name, disabled: busy, autoFocus: true,
+      onChange: (e: any) => setName(e.currentTarget.value),
+      style: {
+        width: '100%', boxSizing: 'border-box', marginTop: 8, padding: '10px 12px', font: 'inherit', fontSize: 13,
+        color: C.text, background: C.surface, border: `1px solid ${tint(C.text2, 24)}`, borderRadius: 10,
+      },
+    }),
+    error ? h('div', { key: 'error', role: 'alert', style: { marginTop: 10, color: C.err, fontSize: 12, overflowWrap: 'anywhere' } }, error) : null,
+    h('div', { key: 'actions', style: { display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 20 } }, [
+      h('button', {
+        key: 'cancel', type: 'button', style: S.btn, disabled: busy, onClick: props.onClose, ...buttonHover(),
+      }, T.newProjectCancel),
+      h('button', {
+        key: 'confirm', type: 'submit', style: { ...S.btnPrimary, opacity: trimmed && !busy ? 1 : 0.5 }, disabled: !trimmed || busy,
+        ...buttonHover(tint(C.brand, 18), tint(C.brand, 28), tint(C.brand, 45), tint(C.brand, 65)),
+      }, busy ? T.processing : T.newProjectConfirm),
+    ]),
+  ]))
+}
+
 // ── 会话绑定行 ────────────────────────────────────────────────────────────────
 
-function SessionBindRow(props: { session: SessionView; projects: ProjectView[]; onChanged: () => void; onJump: (id: string) => void }) {
+function SessionBindRow(props: { session: SessionView; projects: ProjectView[]; onChanged: () => void; onJump: (id: string) => void; onNewProject: () => void }) {
   const { session } = props
   const [busy, setBusy] = React.useState(false)
   const [error, setError] = React.useState('')
@@ -622,16 +694,7 @@ function SessionBindRow(props: { session: SessionView; projects: ProjectView[]; 
 
   const onSelect = async (value: string) => {
     if (value === '__new__') {
-      const name = window.prompt(T.newProjectPromptBind)
-      if (!name?.trim()) return
-      setBusy(true)
-      try {
-        const created = await api<{ id: string }>('addProject', { name: name.trim() })
-        await api('bind', { sessionId: session.id, projectId: created.id })
-        props.onChanged()
-      } finally {
-        setBusy(false)
-      }
+      props.onNewProject()
       return
     }
     await bind(value === '' ? null : value)
@@ -942,6 +1005,7 @@ function HubPage(props: { ctx: any }) {
   const [syncError, setSyncError] = React.useState('')
   const [showHistory, setShowHistory] = React.useState(false)
   const [rescanning, setRescanning] = React.useState(false)
+  const [projectDialog, setProjectDialog] = React.useState<{ sessionId?: string } | null>(null)
   const setSelected = (v: string | null) => {
     hubView = v
     setSelectedRaw(v)
@@ -960,6 +1024,14 @@ function HubPage(props: { ctx: any }) {
       setInitialError((current) => current || message)
     }
   }, [])
+
+  const createProject = async (name: string) => {
+    const created = await api<{ id: string }>('addProject', { name })
+    const sessionId = projectDialog?.sessionId
+    if (sessionId) await api('bind', { sessionId, projectId: created.id })
+    await load()
+    setProjectDialog(null)
+  }
 
   React.useEffect(() => {
     void load()
@@ -1114,7 +1186,7 @@ function HubPage(props: { ctx: any }) {
         h('span', { key: 'count', style: { color: C.text2, fontSize: 11, fontWeight: 500, background: tint(C.text2, 7), padding: '1px 7px', borderRadius: 5 } }, sessions.length),
       ]),
       h('div', { key: 'list', style: { background: C.surface, borderRadius: 14, border: `1px solid ${tint(C.text2, 17)}`, padding: '4px 12px' } }, sessions.length > 0
-        ? sessions.map((s) => h(SessionBindRow, { key: s.id, session: s, projects: data.projects, onChanged: load, onJump: jump }))
+        ? sessions.map((s) => h(SessionBindRow, { key: s.id, session: s, projects: data.projects, onChanged: load, onJump: jump, onNewProject: () => setProjectDialog({ sessionId: s.id }) }))
         : h('div', { style: { ...S.muted, padding: '16px 4px' } }, T.noSessionsInProject)),
     ])
 
@@ -1151,10 +1223,7 @@ function HubPage(props: { ctx: any }) {
       h('button', {
         key: 'new', style: { ...S.btnPrimary, display: 'inline-flex', alignItems: 'center', gap: 5 },
         ...buttonHover(tint(C.brand, 18), tint(C.brand, 28), tint(C.brand, 45), tint(C.brand, 65)),
-        onClick: () => {
-          const name = window.prompt(T.newProjectPrompt)
-          if (name?.trim()) void api('addProject', { name: name.trim() }).then(load).catch((e) => setError(String(e)))
-        },
+        onClick: () => setProjectDialog({}),
       }, [h(Icon, { key: 'i', name: 'plus', size: 13 }), T.newProject]),
     ]),
   ])
@@ -1320,6 +1389,10 @@ function HubPage(props: { ctx: any }) {
       ]) : null,
       h('div', { key: 'canvas', style: { maxWidth: 1600, margin: '0 auto' } }, body),
     ]),
+    projectDialog ? h(NewProjectDialog, {
+      key: 'new-project', bindSession: Boolean(projectDialog.sessionId),
+      onClose: () => setProjectDialog(null), onSubmit: createProject,
+    }) : null,
   ])
 }
 
