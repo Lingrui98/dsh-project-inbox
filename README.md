@@ -4,6 +4,7 @@
 
 [![Release](https://img.shields.io/github/v/release/Lingrui98/dsh-project-inbox)](https://github.com/Lingrui98/dsh-project-inbox/releases/latest)
 [![npm](https://img.shields.io/npm/v/dsh-project-inbox)](https://www.npmjs.com/package/dsh-project-inbox)
+[![Listed on dsh-plugin.org](https://dsh-plugin.org/badges/listed.svg)](https://dsh-plugin.org/plugins/lingrui98/dsh-project-inbox)
 [![dsh-xray: capability card](https://img.shields.io/endpoint?url=https://unstone.github.io/dsh-xray/badge/Lingrui98__dsh-project-inbox.json)](https://unstone.github.io/dsh-xray/registry.html)
 [![CI](https://github.com/Lingrui98/dsh-project-inbox/actions/workflows/ci.yml/badge.svg)](https://github.com/Lingrui98/dsh-project-inbox/actions/workflows/ci.yml)
 [![License: BSD-3-Clause](https://img.shields.io/badge/license-BSD--3--Clause-blue)](LICENSE)
