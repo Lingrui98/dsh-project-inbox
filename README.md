@@ -13,7 +13,7 @@
 
 DSH 擅长一次把一件事做好，但不擅长同时管很多件事。会话一多，问题卡在某个窗口里等你回答，结果散落在不同会话，任务失败了你也未必知道。Project Inbox 在 DSH 之上加一层项目视图：自动把会话归到项目，把需要你处理的事集中到一个收件箱，并让你原地处理完，不必来回切换。
 
-> 独立第三方插件，不是 DeepSeek 官方产品。当前版本 **v0.3.0**，已在 **DSH 0.2.0-rc.2 Web profile** 验证。
+> 独立第三方插件，不是 DeepSeek 官方产品。当前版本 **v0.3.5**，已在 **DSH 0.2.0-rc.2 Web profile** 验证。
 
 ![Project Inbox 面板：跨会话收件箱与项目总览](docs/assets/social-preview.png)
 
@@ -62,7 +62,7 @@ dsh plugin --profile web add dsh-project-inbox
 离线或需要固定版本时，从 [Releases](https://github.com/Lingrui98/dsh-project-inbox/releases/latest) 下载 `.tgz` 后本地安装：
 
 ```bash
-dsh plugin --profile web add /absolute/path/to/dsh-project-inbox-0.3.1.tgz
+dsh plugin --profile web add /absolute/path/to/dsh-project-inbox-0.3.5.tgz
 ```
 
 离线安装包已包含编译产物，不需要自行构建。校验方式：

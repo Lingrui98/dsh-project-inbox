@@ -13,7 +13,7 @@
 
 DeepSeek Harness is great at getting one thing done, but not at keeping track of many things at once. Once sessions pile up, questions wait in a window you are not looking at, results end up in different places, and a failed turn may go unnoticed. Project Inbox adds a project view on top of DSH: sessions are attributed to projects automatically, everything that needs you lands in one inbox, and you handle it without switching tabs.
 
-> An independent third-party plugin, not an official DeepSeek product. Current version **v0.3.0**, verified on **DSH 0.2.0-rc.2 Web profile**.
+> An independent third-party plugin, not an official DeepSeek product. Current version **v0.3.5**, verified on **DSH 0.2.0-rc.2 Web profile**.
 
 ![Project Inbox panel: cross-session inbox and project overview](docs/assets/social-preview.png)
 
@@ -62,7 +62,7 @@ dsh plugin --profile web add dsh-project-inbox
 For offline or pinned installs, download the tarball from [Releases](https://github.com/Lingrui98/dsh-project-inbox/releases/latest) and install it locally:
 
 ```bash
-dsh plugin --profile web add /absolute/path/to/dsh-project-inbox-0.3.1.tgz
+dsh plugin --profile web add /absolute/path/to/dsh-project-inbox-0.3.5.tgz
 ```
 
 The offline package ships prebuilt; no build step is needed. To verify:
