@@ -1,13 +1,13 @@
 /** Scoped presentation only. No host-shell selectors or external assets. */
 export const HUB_CSS = `
 .rh-root {
-  --rh-accent: #7167f2;
-  --rh-indigo: #4f46e5;
-  --rh-violet: #8b5cf6;
-  --rh-cyan: #06b6d4;
+  --rh-accent: #46536e;
+  --rh-indigo: #3d4a68;
+  --rh-violet: #7a7f96;
+  --rh-cyan: #54757a;
   --rh-surface: var(--dsw-alias-bg-layer-1, #fff);
   --rh-surface-2: var(--dsw-alias-bg-layer-2, #f1f1f2);
-  --rh-base: var(--dsw-alias-bg-base, #f7f7f8);
+  --rh-base: var(--dsw-alias-bg-base, #f8f8f7);
   --rh-ink: var(--dsw-alias-label-primary, #202020);
   --rh-shadow-ink: color-mix(in srgb, var(--rh-ink) 18%, transparent);
   font-family: inherit; line-height: 1.5; -webkit-font-smoothing: antialiased; container: research-hub / inline-size;
@@ -16,9 +16,9 @@ export const HUB_CSS = `
 .rh-root button, .rh-root textarea, .rh-root select, .rh-root input { font-family: inherit; }
 .rh-root button { -webkit-tap-highlight-color: transparent; }
 .rh-root .rh-toolbar {
-  background-image: linear-gradient(112deg, color-mix(in srgb, var(--rh-indigo) 12%, var(--rh-surface)) 0%, color-mix(in srgb, var(--rh-violet) 8%, var(--rh-surface)) 52%, color-mix(in srgb, var(--rh-cyan) 7%, var(--rh-surface)) 100%) !important;
-  border-bottom-color: color-mix(in srgb, var(--rh-indigo) 28%, transparent) !important;
-  box-shadow: 0 1px 0 color-mix(in srgb, var(--rh-violet) 18%, transparent), 0 8px 26px color-mix(in srgb, var(--rh-indigo) 10%, transparent);
+  background-image: linear-gradient(180deg, color-mix(in srgb, var(--rh-indigo) 5%, var(--rh-surface)) 0%, var(--rh-surface) 100%) !important;
+  border-bottom-color: color-mix(in srgb, var(--rh-ink) 9%, transparent) !important;
+  box-shadow: none;
   position: relative; z-index: 1;
 }
 .rh-root .rh-content {
@@ -26,23 +26,23 @@ export const HUB_CSS = `
 }
 .rh-root .rh-project {
   position: relative;
-  border-color: color-mix(in srgb, var(--rh-indigo) 25%, var(--rh-ink)) !important;
-  background: linear-gradient(145deg, color-mix(in srgb, var(--rh-surface) 93%, var(--rh-violet)), color-mix(in srgb, var(--rh-surface) 97%, var(--rh-indigo))) !important;
-  box-shadow: 0 2px 4px color-mix(in srgb, var(--rh-ink) 6%, transparent), 0 10px 28px color-mix(in srgb, var(--rh-indigo) 11%, transparent), inset 0 1px 0 color-mix(in srgb, var(--rh-violet) 18%, transparent) !important;
+  border-color: color-mix(in srgb, var(--rh-ink) 9%, transparent) !important;
+  background: linear-gradient(150deg, color-mix(in srgb, var(--rh-hue) 4%, transparent), transparent 55%), var(--rh-surface) !important;
+  box-shadow: 0 2px 4px color-mix(in srgb, var(--rh-ink) 4%, transparent), 0 12px 32px color-mix(in srgb, var(--rh-ink) 6%, transparent) !important;
 }
 .rh-root .rh-project::before {
   content: ''; position: absolute; inset: -1px; border-radius: inherit; pointer-events: none;
-  box-shadow: 0 0 0 1px color-mix(in srgb, var(--rh-violet) 26%, transparent), 0 12px 34px color-mix(in srgb, var(--rh-cyan) 7%, transparent);
-  opacity: 0.72; transition: opacity 160ms ease;
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--rh-hue) 22%, transparent);
+  opacity: 0; transition: opacity 160ms ease;
 }
 .rh-root .rh-project:hover, .rh-root .rh-project:focus-within {
-  border-color: color-mix(in srgb, var(--rh-violet) 68%, var(--rh-indigo)) !important;
-  box-shadow: 0 8px 30px color-mix(in srgb, var(--rh-violet) 24%, transparent), 0 3px 8px color-mix(in srgb, var(--rh-indigo) 16%, transparent), inset 0 1px 0 color-mix(in srgb, var(--rh-cyan) 24%, transparent) !important;
+  border-color: color-mix(in srgb, var(--rh-hue) 38%, transparent) !important;
+  box-shadow: 0 12px 34px color-mix(in srgb, var(--rh-ink) 8%, transparent), 0 3px 8px color-mix(in srgb, var(--rh-ink) 5%, transparent) !important;
 }
 .rh-root .rh-project:hover::before, .rh-root .rh-project:focus-within::before { opacity: 1; }
 .rh-root .rh-inbox {
-  border-color: color-mix(in srgb, var(--rh-cyan) 32%, var(--rh-indigo)) !important;
-  box-shadow: 0 5px 22px color-mix(in srgb, var(--rh-indigo) 12%, transparent), 0 0 30px color-mix(in srgb, var(--rh-cyan) 8%, transparent), inset 0 1px 0 color-mix(in srgb, var(--rh-surface) 38%, transparent) !important;
+  border-color: color-mix(in srgb, var(--rh-indigo) 18%, transparent) !important;
+  box-shadow: 0 8px 28px color-mix(in srgb, var(--rh-indigo) 7%, transparent), inset 0 1px 0 color-mix(in srgb, var(--rh-surface) 38%, transparent) !important;
 }
 .rh-root .rh-inbox-empty {
   background: linear-gradient(110deg, color-mix(in srgb, var(--rh-cyan) 10%, var(--rh-surface)), color-mix(in srgb, var(--rh-violet) 7%, var(--rh-surface))) !important;
@@ -51,12 +51,12 @@ export const HUB_CSS = `
 .rh-root .rh-inbox-heading-icon {
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--rh-cyan) 38%, transparent), 0 5px 18px color-mix(in srgb, var(--rh-violet) 18%, transparent) !important;
 }
-.rh-root .rh-inbox-heading h2 { background: linear-gradient(100deg, var(--rh-indigo), var(--rh-violet) 55%, var(--rh-cyan)); background-clip: text; -webkit-background-clip: text; color: transparent; }
+.rh-root .rh-inbox-heading h2 { color: var(--rh-ink); }
 
 .rh-root :is(button, select, textarea, input):disabled { cursor: not-allowed; filter: saturate(0.7); }
 .rh-root :is(button, select, textarea, input):disabled:active { transform: none !important; }
 .rh-root :is(button, select, textarea, input, [tabindex]):focus-visible {
-  outline: 2px solid color-mix(in srgb, var(--rh-cyan) 72%, var(--rh-violet)); outline-offset: 3px;
+  outline: 2px solid color-mix(in srgb, var(--rh-accent) 70%, transparent); outline-offset: 3px;
 }
 .rh-root textarea:focus-visible, .rh-root input:focus-visible { outline-offset: 1px; }
 .rh-root .rh-project:focus-within { border-color: color-mix(in srgb, var(--rh-hue) 55%, transparent) !important; }
@@ -85,7 +85,7 @@ export const HUB_CSS = `
 }
 .rh-root .rh-session-row,
 .rh-root .rh-message {
-  border-color: color-mix(in srgb, var(--rh-ink) 12%, transparent);
+  border-color: color-mix(in srgb, var(--rh-ink) 9%, transparent);
 }
 @media (hover: hover) and (pointer: fine) {
   .rh-root :is(button, select):not(:disabled):hover {

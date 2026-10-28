@@ -145,9 +145,9 @@ async function api<T = any>(method: string, payload?: any): Promise<T> {
 // ── 样式（只用宿主 theme token） ─────────────────────────────────────────────
 
 const C = {
-  base: 'var(--dsw-alias-bg-base, #f7f7f8)',
+  base: 'var(--dsw-alias-bg-base, #f8f8f7)',
   surface: 'var(--dsw-alias-bg-layer-1, #ffffff)',
-  surface2: 'var(--dsw-alias-bg-layer-2, #f1f1f2)',
+  surface2: 'var(--dsw-alias-bg-layer-2, #f1f0ee)',
   overlay: 'var(--dsw-alias-bg-overlay, #ffffff)',
   border: 'var(--dsw-alias-border-l1, rgba(0,0,0,0.16))',
   borderStrong: 'var(--dsw-alias-border-l2, rgba(0,0,0,0.28))',
@@ -173,7 +173,7 @@ const S: Record<string, React.CSSProperties> = {
   },
   content: {
     flex: 1, overflowY: 'auto', padding: '28px clamp(18px, 3vw, 40px) 40px',
-    minWidth: 0, background: `radial-gradient(ellipse at 90% 0%, ${tint('#6589df', 5)}, transparent 55%), ${C.base}`,
+    minWidth: 0, background: `radial-gradient(ellipse at 90% 0%, ${tint('#46536e', 4)}, transparent 55%), ${C.base}`,
   },
   grid: {
     display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(min(100%, 340px), 1fr))',
@@ -319,7 +319,7 @@ function Icon(props: { name: keyof typeof ICON_PATHS; size?: number; color?: str
 
 // ── 项目色相：按 id 哈希稳定取色，color-mix 低透明组合，亮暗主题都安全 ───────
 
-const HUES = ['#4f7dd8', '#2f9e67', '#b7791f', '#8a5fd6', '#c94b58', '#2fa3a8']
+const HUES = ['#5b7bb0', '#4e8f70', '#a8824a', '#8379b4', '#b4656a', '#5a8f8c']
 
 function projectHue(id: string): string {
   let n = 0
