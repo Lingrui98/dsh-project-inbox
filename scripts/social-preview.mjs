@@ -55,13 +55,13 @@ const sessions = [
   { id: 'session-d', title: 'Recent session 4: draft the API migration plan', updatedAt: now - 600_000, running: false },
 ]
 const projects = [
-  { id: 'web', name: 'Web app', sessions, counts: { questions: 2, deliverables: 1, alerts: 1, urgent: 1 } },
-  { id: 'infra', name: 'Infrastructure', sessions: sessions.slice(0, 2), counts: zero },
-  { id: 'docs', name: 'Documentation', sessions: sessions.slice(1, 3), counts: zero },
-  { id: 'data', name: 'Data pipeline', sessions: [sessions[2]], counts: zero },
-  { id: 'lab', name: 'Lab notes', sessions: [sessions[2]], counts: zero },
-  { id: 'ops', name: 'Ops runbooks', sessions: [], counts: zero },
-  { id: 'mobile', name: 'Mobile app', sessions: [sessions[3]], counts: zero },
+  { id: 'web', name: 'Web app', sessions, counts: { questions: 1, deliverables: 0, alerts: 0, urgent: 1, notes: 0 } },
+  { id: 'infra', name: 'Infrastructure', sessions: sessions.slice(0, 2), counts: { ...zero, deliverables: 1 } },
+  { id: 'docs', name: 'Documentation', sessions: sessions.slice(1, 3), counts: { ...zero, notes: 1 } },
+  { id: 'data', name: 'Data pipeline', sessions: [sessions[2]], counts: { ...zero, questions: 1 } },
+  { id: 'lab', name: 'Lab notes', sessions: [sessions[2]], counts: { ...zero, alerts: 1 } },
+  { id: 'ops', name: 'Ops runbooks', sessions: [], counts: { ...zero, deliverables: 1 } },
+  { id: 'mobile', name: 'Mobile app', sessions: [sessions[3]], counts: { ...zero, questions: 1 } },
   { id: 'design', name: 'Design system', sessions: [], counts: zero },
 ]
 const items = [
@@ -69,10 +69,11 @@ const items = [
   { id: 'item-q2', sessionId: 'session-c', sessionTitle: sessions[2].title, sessionVisible: true, sessionRunning: false, projectId: 'data', title: 'Should the rerun keep the old table names?', body: 'The schema changed; keeping names avoids breaking downstream jobs.', priority: 'normal', type: 'question', status: 'pending', source: 'tool', createdAt: now - 120_000 },
   { id: 'item-q3', sessionId: 'session-d', sessionTitle: sessions[3].title, sessionVisible: true, sessionRunning: false, projectId: 'mobile', title: 'Is the dark theme required for the first release?', body: 'It adds about a day of work. The alternative is to ship light-only and follow up.', priority: 'normal', type: 'question', status: 'pending', source: 'tool', createdAt: now - 900_000 },
   { id: 'item-d1', sessionId: 'session-b', sessionTitle: sessions[1].title, sessionVisible: true, sessionRunning: true, projectId: 'infra', title: 'Build artifacts are ready for review', body: 'Checksums and the comparison report are attached.', priority: 'normal', type: 'deliverable', status: 'pending', source: 'tool', createdAt: now - 300_000 },
-  { id: 'item-d2', sessionId: 'session-a', sessionTitle: sessions[0].title, sessionVisible: true, sessionRunning: false, projectId: 'web', title: 'Pull request opened for the settings page', body: 'The changes are small; the preview deployment is up for a quick look.', priority: 'normal', type: 'deliverable', status: 'pending', source: 'tool', createdAt: now - 1_200_000 },
-  { id: 'item-a1', sessionId: 'session-a', sessionTitle: sessions[0].title, sessionVisible: true, sessionRunning: false, projectId: 'web', title: 'Turn interrupted: model error', body: 'The previous turn stopped before finishing.', priority: 'normal', type: 'alert', status: 'pending', source: 'system', alert: { turn: 12, kind: 'error', code: 'PI_AI_ERROR', detail: 'upstream request failed' }, createdAt: now - 600_000 },
+  { id: 'item-d2', sessionId: 'session-a', sessionTitle: sessions[0].title, sessionVisible: true, sessionRunning: false, projectId: 'ops', title: 'Pull request opened for the settings page', body: 'The changes are small; the preview deployment is up for a quick look.', priority: 'normal', type: 'deliverable', status: 'pending', source: 'tool', createdAt: now - 1_200_000 },
+  { id: 'item-a1', sessionId: 'session-a', sessionTitle: sessions[0].title, sessionVisible: true, sessionRunning: false, projectId: 'lab', title: 'Turn interrupted: model error', body: 'The previous turn stopped before finishing.', priority: 'normal', type: 'alert', status: 'pending', source: 'system', alert: { turn: 12, kind: 'error', code: 'PI_AI_ERROR', detail: 'upstream request failed' }, createdAt: now - 600_000 },
+  { id: 'item-n1', sessionId: 'session-c', sessionTitle: sessions[2].title, sessionVisible: true, sessionRunning: false, projectId: 'docs', kind: { label: 'Note', action: 'read', postable: true }, title: 'Schema owner confirmed the rename window', body: 'The data team keeps the old table names until Friday; the migration plan already matches.', priority: 'normal', type: 'note', status: 'pending', source: 'tool', createdAt: now - 45_000 },
 ]
-const panel = { now, pending: 6, projects, unassignedSessions: [], unassignedCounts: zero, trashedSessions: [], items, kinds: {}, layout: {} }
+const panel = { now, pending: 7, projects, unassignedSessions: [], unassignedCounts: zero, trashedSessions: [], items, kinds: {}, layout: {} }
 
 const themes = {
   dark: {
