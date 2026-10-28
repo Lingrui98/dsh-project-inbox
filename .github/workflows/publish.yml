@@ -1,0 +1,25 @@
+name: Publish to npm
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+permissions:
+  contents: read
+  id-token: write
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          registry-url: 'https://registry.npmjs.org'
+      - name: Use an npm that supports trusted publishing
+        run: npm install -g npm@latest
+      - name: Install build tools
+        run: npm ci --legacy-peer-deps --ignore-scripts
+      - name: Build, test and verify the tarball
+        run: npm run check:release
+      - name: Publish with OIDC
+        run: npm publish --access public
